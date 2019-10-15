@@ -1,0 +1,30 @@
+syntax = "proto3";
+package ps;
+
+service StorageForMetadata {
+  rpc Locate(LocateRequest) returns (LocateResponse) {}
+}
+
+service StorageForProxy{
+  rpc Get(GetRequest) returns (GetResponse) {}
+  rpc Put(PutRequest) returns (PutResponse) {}
+}
+
+message LocateRequest { string key = 1; }
+
+message LocateResponse {}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  string body = 1;
+}
+
+message PutRequest {
+  string key = 1;
+  string body = 2;
+}
+
+message PutResponse {}

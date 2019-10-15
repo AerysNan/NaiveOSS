@@ -1,0 +1,23 @@
+syntax = "proto3";
+package pm;
+
+service MetadataForStorage {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}
+
+message HeartbeatRequest { string address = 1; }
+
+message HeartbeatResponse {}
+
+service MetadataForProxy {
+  rpc Locate(LocateRequest) returns (LocateResponse) {}
+  rpc ListStorage(ListStorageRequest) returns (ListStorageResponse) {}
+}
+
+message LocateRequest { string key = 1; }
+
+message LocateResponse { string address = 1; }
+
+message ListStorageRequest {}
+
+message ListStorageResponse { repeated string address = 1; }
