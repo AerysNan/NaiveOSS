@@ -5,7 +5,7 @@ service StorageForMetadata {
   rpc Locate(LocateRequest) returns (LocateResponse) {}
 }
 
-service StorageForProxy{
+service StorageForProxy {
   rpc Get(GetRequest) returns (GetResponse) {}
   rpc Put(PutRequest) returns (PutResponse) {}
 }
@@ -15,16 +15,15 @@ message LocateRequest { string key = 1; }
 message LocateResponse {}
 
 message GetRequest {
-  string key = 1;
+  string page = 1;
+  int64 offset = 2;
 }
 
-message GetResponse {
-  string body = 1;
-}
+message GetResponse { string body = 1; }
 
-message PutRequest {
-  string key = 1;
-  string body = 2;
-}
+message PutRequest { string body = 2; }
 
-message PutResponse {}
+message PutResponse {
+  string page = 1;
+  int64 offset = 2;
+}
