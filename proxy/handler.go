@@ -2,8 +2,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/md5"
+	"fmt"
 	"io/ioutil"
-	"math/rand"
 	"net/http"
 
 	pm "oss/proto/metadata"
@@ -48,35 +49,35 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()["key"]) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
+	p := checkParameter(w, r, []string{"bucket", "key"})
+	if p == nil {
 		return
 	}
-	key := r.URL.Query()["key"][0]
-	if len(key) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	bucket, key := p[0], p[1]
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
+		writeError(w, err)
 		return
 	}
 	ctx := context.Background()
-	response, err := s.metadataClient.ListStorage(ctx, &pm.ListStorageRequest{})
+	response, err := s.metadataClient.CheckMeta(ctx, &pm.CheckMetaRequest{
+		Bucket: bucket,
+		Key:    key,
+		Tag:    fmt.Sprintf("%x", md5.Sum([]byte(body))),
+	})
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
+		writeError(w, err)
+	}
+	if response.Existed {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
-	address := response.Address[rand.Intn(len(response.Address))]
+	address := response.Address
 	connection, ok := s.storageClients[address]
 	if !ok {
 		connection, err = grpc.Dial(address, grpc.WithInsecure())
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(err.Error()))
+			writeError(w, err)
 			return
 		}
 		if len(s.storageClients) >= maxStorageConnection {
@@ -94,40 +95,35 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 		Key:  key,
 		Body: string(body),
 	})
+	// TODO: put meta to metadata server
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
+		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()["key"]) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
+	p := checkParameter(w, r, []string{"bucket", "key"})
+	if p == nil {
 		return
 	}
-	key := r.URL.Query()["key"][0]
-	if len(key) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	bucket, key := p[0], p[1]
 	ctx := context.Background()
-	locateResponse, err := s.metadataClient.Locate(ctx, &pm.LocateRequest{
-		Key: key,
+	getMetaResponse, err := s.metadataClient.GetMeta(ctx, &pm.GetMetaRequest{
+		Bucket: bucket,
+		Key:    key,
 	})
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
+		writeError(w, err)
 		return
 	}
-	address := locateResponse.Address
+	address := getMetaResponse.Address
 	connection, ok := s.storageClients[address]
 	if !ok {
 		connection, err = grpc.Dial(address, grpc.WithInsecure())
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(err.Error()))
+			writeError(w, err)
 			return
 		}
 		if len(s.storageClients) >= maxStorageConnection {
@@ -145,8 +141,7 @@ func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
 		Key: key,
 	})
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
+		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

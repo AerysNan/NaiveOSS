@@ -10,14 +10,46 @@ message HeartbeatRequest { string address = 1; }
 message HeartbeatResponse {}
 
 service MetadataForProxy {
-  rpc Locate(LocateRequest) returns (LocateResponse) {}
-  rpc ListStorage(ListStorageRequest) returns (ListStorageResponse) {}
+  rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}
+  rpc CheckMeta(CheckMetaRequest) returns (CheckMetaResponse) {}
+  rpc PutMeta(PutMetaRequest) returns (PutMetaResponse) {}
+  rpc GetMeta(GetMetaRequest) returns (GetMetaResponse) {}
 }
 
-message LocateRequest { string key = 1; }
+message CreateBucketRequest { string bucket = 1; }
 
-message LocateResponse { string address = 1; }
+message CreateBucketResponse {}
 
-message ListStorageRequest {}
+message CheckMetaRequest {
+  string bucket = 1;
+  string key = 2;
+  string tag = 3;
+}
 
-message ListStorageResponse { repeated string address = 1; }
+message CheckMetaResponse {
+  bool existed = 1;
+  string address = 2;
+}
+
+message PutMetaRequest {
+  string bucket = 1;
+  string key = 2;
+  string tag = 3;
+  string address = 4;
+  string volume = 5;
+  int32 offset = 6;
+  int32 size = 7;
+}
+
+message PutMetaResponse {}
+
+message GetMetaRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetMetaResponse {
+  string address = 1;
+  string volume = 2;
+  int32 offset = 3;
+}
