@@ -16,6 +16,7 @@ type Entry struct {
 	Address string
 	Volume  string
 	Offset  int
+	Size    int
 }
 
 type EntryList []*Entry

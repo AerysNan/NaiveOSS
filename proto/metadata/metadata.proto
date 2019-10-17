@@ -2,12 +2,12 @@ syntax = "proto3";
 package pm;
 
 service MetadataForStorage {
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+  rpc Register(RegisterRequest) returns (RegisterResponse) {}
 }
 
-message HeartbeatRequest { string address = 1; }
+message RegisterRequest { string address = 1; }
 
-message HeartbeatResponse {}
+message RegisterResponse {}
 
 service MetadataForProxy {
   rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}

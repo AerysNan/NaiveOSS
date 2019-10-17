@@ -74,7 +74,7 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 	return nil, nil
 }
 
-func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
+func (s *MetadataServer) Register(ctx context.Context, request *pm.RegisterRequest) (*pm.RegisterResponse, error) {
 	address := request.Address
 	_, ok := s.storageClients[address]
 	if !ok {
@@ -86,7 +86,7 @@ func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatReq
 		s.storageClients[address] = storageClient
 		logrus.WithField("address", address).Info("Connect to new storage server")
 	}
-	return &pm.HeartbeatResponse{}, nil
+	return &pm.RegisterResponse{}, nil
 }
 
 func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
@@ -153,6 +153,7 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 		Address: request.Address,
 		Volume:  request.Volume,
 		Offset:  int(request.Offset),
+		Size:    int(request.Size),
 	}
 	if len(bucket.MemoMap) > LayerKeyThreshold || bucket.MemoSize > LayerSizeThreshold {
 		err := bucket.createNewLayer()
@@ -160,6 +161,7 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 			return nil, err
 		}
 	}
+	bucket.TagMap[request.Tag] = request.Key
 	bucket.MemoMap[request.Key] = entry
 	bucket.MemoSize += int(request.Size)
 	return &pm.PutMetaResponse{}, nil
