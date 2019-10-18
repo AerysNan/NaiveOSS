@@ -2,12 +2,15 @@ package metadata
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"oss/osserror"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -16,6 +19,10 @@ import (
 var (
 	LayerKeyThreshold  = 1000
 	LayerSizeThreshold = 1 << 30
+
+	HeartbeatInterval = 5 * time.Second
+	HeartbeatTimeout  = 2 * time.Second
+	HeartbeatFailure  = 3
 
 	DefaultBucketName = "default"
 	DeletedValue      = "ObjectDeleted"
@@ -28,14 +35,34 @@ type MetadataServer struct {
 
 	bucket         map[string]*Bucket
 	address        string
+	storageTokens  map[string]int64
 	storageClients map[string]ps.StorageForMetadataClient
 }
 
 func NewMetadataServer(address string) *MetadataServer {
-	return &MetadataServer{
+	s := &MetadataServer{
 		address:        address,
 		bucket:         make(map[string]*Bucket),
+		storageTokens:  make(map[string]int64),
 		storageClients: make(map[string]ps.StorageForMetadataClient),
+	}
+	go s.heartbeatLoop()
+	return s
+}
+
+func (s *MetadataServer) heartbeatLoop() {
+	ticker := time.NewTicker(HeartbeatInterval)
+	for {
+		for address, client := range s.storageClients {
+			ctx, cancel := context.WithTimeout(context.Background(), HeartbeatTimeout)
+			_, err := client.Heartbeat(ctx, &ps.HeartbeatRequest{})
+			if err != nil {
+				logrus.WithError(err).Warnf("Heartbeat failed on address %v", address)
+				delete(s.storageClients, address)
+			}
+			cancel()
+		}
+		<-ticker.C
 	}
 }
 
@@ -86,10 +113,15 @@ func (s *MetadataServer) Register(ctx context.Context, request *pm.RegisterReque
 			return nil, err
 		}
 		storageClient := ps.NewStorageForMetadataClient(connection)
+		timestamp := time.Now().Unix()
 		s.storageClients[address] = storageClient
+		s.storageTokens[address] = timestamp
 		logrus.WithField("address", address).Info("Connect to new storage server")
+		return &pm.RegisterResponse{
+			Token: timestamp,
+		}, nil
 	}
-	return &pm.RegisterResponse{}, nil
+	return nil, osserror.ErrDuplicateConnection
 }
 
 func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
@@ -133,13 +165,16 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 			return &pm.CheckMetaResponse{
 				Existed: true,
 				Address: "",
+				Token:   "",
 			}, nil
 		}
 	}
 	for address := range s.storageClients {
+		link := fmt.Sprintf("%v:%v", s.storageTokens[address], request.Tag)
 		return &pm.CheckMetaResponse{
 			Existed: false,
 			Address: address,
+			Token:   fmt.Sprintf("%x", md5.Sum([]byte(link))),
 		}, nil
 	}
 	return nil, osserror.ErrNoStorageAvailable
@@ -154,9 +189,9 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 		Key:     request.Key,
 		Tag:     request.Tag,
 		Address: request.Address,
-		Volume:  int(request.VolumeId),
-		Offset:  int(request.Offset),
-		Size:    int(request.Size),
+		Volume:  request.VolumeId,
+		Offset:  request.Offset,
+		Size:    request.Size,
 	}
 	if len(bucket.MemoMap) > LayerKeyThreshold || bucket.MemoSize > LayerSizeThreshold {
 		err := bucket.createNewLayer()

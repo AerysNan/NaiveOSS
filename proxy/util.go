@@ -38,6 +38,8 @@ func writeError(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusInsufficientStorage)
 	case osserror.ErrObjectMetadataNotFound:
 		w.WriteHeader(http.StatusNotFound)
+	case osserror.ErrUnauthenticated:
+		w.WriteHeader(http.StatusUnauthorized)
 	}
 	_, _ = w.Write([]byte(err.Error()))
 }

@@ -7,7 +7,7 @@ service MetadataForStorage {
 
 message RegisterRequest { string address = 1; }
 
-message RegisterResponse {}
+message RegisterResponse { int64 token = 1; }
 
 service MetadataForProxy {
   rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}
@@ -29,6 +29,7 @@ message CheckMetaRequest {
 message CheckMetaResponse {
   bool existed = 1;
   string address = 2;
+  string token = 3;
 }
 
 message PutMetaRequest {

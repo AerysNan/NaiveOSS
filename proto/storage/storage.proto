@@ -1,7 +1,13 @@
 syntax = "proto3";
 package ps;
 
-service StorageForMetadata {}
+service StorageForMetadata {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}
+
+message HeartbeatRequest {}
+
+message HeartbeatResponse {}
 
 service StorageForProxy {
   rpc Get(GetRequest) returns (GetResponse) {}
@@ -15,7 +21,10 @@ message GetRequest {
 
 message GetResponse { string body = 1; }
 
-message PutRequest { string body = 2; }
+message PutRequest {
+  string body = 1;
+  string token = 2;
+}
 
 message PutResponse {
   int64 volume_id = 1;

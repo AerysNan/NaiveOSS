@@ -19,6 +19,7 @@ var (
 )
 
 func main() {
+	flag.Int64Var(&storage.VolumeMaxSize, "volume-size", 1<<10, "maximum size of volume")
 	flag.Parse()
 	if *debug {
 		logrus.SetLevel(logrus.DebugLevel)
