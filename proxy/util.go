@@ -5,7 +5,7 @@ import (
 	"oss/osserror"
 )
 
-func checkParameter(w http.ResponseWriter, r *http.Request, parameters []string) ([]string, error) {
+func checkParameter(r *http.Request, parameters []string) ([]string, error) {
 	result := make([]string, 0)
 	for _, p := range parameters {
 		if len(r.URL.Query()[p]) == 0 {

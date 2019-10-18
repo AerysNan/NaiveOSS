@@ -37,6 +37,9 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodPost:
+		logrus.Debug("Handle post method")
+		s.post(w, r)
 	case http.MethodPut:
 		logrus.Debug("Handle put method")
 		s.put(w, r)
@@ -48,8 +51,25 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *ProxyServer) post(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	bucket := p[0]
+	_, err = s.metadataClient.CreateBucket(context.Background(), &pm.CreateBucketRequest{
+		Bucket: bucket,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(w, r, []string{"bucket", "key"})
+	p, err := checkParameter(r, []string{"bucket", "key"})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -118,7 +138,7 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(w, r, []string{"bucket", "key"})
+	p, err := checkParameter(r, []string{"bucket", "key"})
 	if err != nil {
 		writeError(w, err)
 		return
