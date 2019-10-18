@@ -2,15 +2,25 @@ package storage
 
 import (
 	"context"
-	"io/ioutil"
+	"encoding/binary"
+	"fmt"
 	"os"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 	"path"
-	"time"
+	"strings"
+
+	"io/ioutil"
 
 	"github.com/sirupsen/logrus"
 )
+
+var VolumeMaxSize int64 = 10
+
+type Volume struct {
+	volumeId int64
+	size     int64
+}
 
 type StorageServer struct {
 	ps.StorageForProxyServer
@@ -19,6 +29,9 @@ type StorageServer struct {
 
 	address string
 	root    string
+
+	currentVolume *Volume
+	volumes       map[int64]*Volume
 }
 
 func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient) *StorageServer {
@@ -26,59 +39,96 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 		metadataClient: metadataClient,
 		address:        address,
 		root:           root,
+		volumes:        make(map[int64]*Volume),
+		currentVolume:  new(Volume),
 	}
-	go storageServer.heartbeatLoop()
+	storageServer.recover()
 	return storageServer
 }
 
-func (s *StorageServer) heartbeatLoop() {
-	ticker := time.NewTicker(5 * time.Second)
-	for {
-		<-ticker.C
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := s.metadataClient.Heartbeat(ctx, &pm.HeartbeatRequest{
-			Address: s.address,
-		})
-		if err != nil {
-			logrus.WithError(err).Warn("Heartbeat failed")
+func (s *StorageServer) recover() {
+	files, err := ioutil.ReadDir(s.root)
+	if err != nil {
+		logrus.WithError(err).Error("Open recover directory failed")
+		return
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".dat") {
+			err := s.recoverSingleFile(file.Name())
+			if err != nil {
+				logrus.WithError(err).Errorf("Recover from file %v failed", file.Name())
+			}
 		}
-		cancel()
 	}
 }
 
-func (s *StorageServer) Locate(ctx context.Context, request *ps.LocateRequest) (*ps.LocateResponse, error) {
-	key := request.Key
-	_, err := os.Stat(path.Join(s.root, key))
+func (s *StorageServer) recoverSingleFile(name string) error {
+	file, err := os.Open(path.Join(s.root, name))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &ps.LocateResponse{}, nil
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	var volumeId int64
+	fmt.Sscanf(info.Name(), "%v.dat", &volumeId)
+	s.volumes[volumeId] = &Volume{
+		volumeId: volumeId,
+		size:     info.Size(),
+	}
+	return nil
 }
 
 func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
-	key := request.Key
-	file, err := os.Open(path.Join(s.root, key))
+	volumeId := request.VolumeId
+	offset := request.Offset
+	file, err := os.Open(path.Join(s.root, fmt.Sprintf("%d", volumeId)+".dat"))
 	if err != nil {
 		return nil, err
 	}
-	bytes, err := ioutil.ReadAll(file)
+	defer file.Close()
+	bytes := make([]byte, 8)
+	_, err = file.ReadAt(bytes, offset)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, int64(binary.BigEndian.Uint64(bytes)))
+	_, err = file.ReadAt(data, offset+8)
 	if err != nil {
 		return nil, err
 	}
 	return &ps.GetResponse{
-		Body: string(bytes),
+		Body: string(data),
 	}, nil
 }
 
 func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
-	key := request.Key
-	file, err := os.Create(path.Join(s.root, key))
+	data := request.Body
+	size := int64(len(data))
+	file, err := os.OpenFile(path.Join(s.root, fmt.Sprintf("%d", s.currentVolume.volumeId)+".dat"), os.O_APPEND|os.O_CREATE, 0766)
 	if err != nil {
 		return nil, err
 	}
-	_, err = file.WriteString(request.Body)
+	defer file.Close()
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(size))
+	_, err = file.Write(bytes)
 	if err != nil {
 		return nil, err
 	}
-	return &ps.PutResponse{}, nil
+	_, err = file.Write([]byte(data))
+	if err != nil {
+		return nil, err
+	}
+	response := &ps.PutResponse{
+		VolumeId: s.currentVolume.volumeId,
+		Offset:   s.currentVolume.size,
+	}
+	s.currentVolume.size += 8 + size
+	if s.currentVolume.size >= VolumeMaxSize {
+		s.currentVolume.volumeId++
+		s.currentVolume.size = 0
+	}
+	return response, nil
 }
