@@ -151,7 +151,7 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 		Key:     request.Key,
 		Tag:     request.Tag,
 		Address: request.Address,
-		Volume:  request.Volume,
+		Volume:  int(request.VolumeId),
 		Offset:  int(request.Offset),
 		Size:    int(request.Size),
 	}
@@ -179,8 +179,8 @@ func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest
 		return nil, osserror.ErrObjectMetadataNotFound
 	}
 	return &pm.GetMetaResponse{
-		Address: entry.Address,
-		Volume:  entry.Volume,
-		Offset:  int32(entry.Offset),
+		Address:  entry.Address,
+		VolumeId: int64(entry.Volume),
+		Offset:   int64(entry.Offset),
 	}, nil
 }

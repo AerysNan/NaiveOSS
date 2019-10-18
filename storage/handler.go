@@ -9,13 +9,18 @@ import (
 	ps "oss/proto/storage"
 	"path"
 	"strings"
+	"time"
 
 	"io/ioutil"
 
 	"github.com/sirupsen/logrus"
 )
 
-var VolumeMaxSize int64 = 10
+var (
+	VolumeMaxSize       int64 = 10
+	connectLoopInterval       = 5 * time.Second
+	connectTimeout            = 2 * time.Second
+)
 
 type Volume struct {
 	volumeId int64
@@ -43,7 +48,25 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 		currentVolume:  new(Volume),
 	}
 	storageServer.recover()
+	go storageServer.connectToMetaServer()
 	return storageServer
+}
+
+func (s *StorageServer) connectToMetaServer() {
+	ticker := time.NewTicker(connectLoopInterval)
+	for {
+		<-ticker.C
+		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+		_, err := s.metadataClient.Register(ctx, &pm.RegisterRequest{
+			Address: s.address,
+		})
+		cancel()
+		if err != nil {
+			logrus.WithError(err).Error("Connect to metadata server failed")
+		} else {
+			return
+		}
+	}
 }
 
 func (s *StorageServer) recover() {
@@ -106,7 +129,12 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
 	data := request.Body
 	size := int64(len(data))
+<<<<<<< Updated upstream
 	file, err := os.OpenFile(path.Join(s.root, fmt.Sprintf("%d", s.currentVolume.volumeId)+".dat"), os.O_APPEND|os.O_CREATE, 0766)
+=======
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolume.volumeId))
+	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
+>>>>>>> Stashed changes
 	if err != nil {
 		return nil, err
 	}
