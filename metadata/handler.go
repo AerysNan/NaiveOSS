@@ -8,6 +8,7 @@ import (
 	"oss/osserror"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -16,6 +17,10 @@ import (
 var (
 	LayerKeyThreshold  = 1000
 	LayerSizeThreshold = 1 << 30
+
+	HeartbeatInterval = 5 * time.Second
+	HeartbeatTimeout  = 2 * time.Second
+	HeartbeatFailure  = 3
 
 	DefaultBucketName = "default"
 	DeletedValue      = "ObjectDeleted"
@@ -28,14 +33,34 @@ type MetadataServer struct {
 
 	bucket         map[string]*Bucket
 	address        string
+	storageTokens  map[string]int64
 	storageClients map[string]ps.StorageForMetadataClient
 }
 
 func NewMetadataServer(address string) *MetadataServer {
-	return &MetadataServer{
+	s := &MetadataServer{
 		address:        address,
 		bucket:         make(map[string]*Bucket),
+		storageTokens:  make(map[string]int64),
 		storageClients: make(map[string]ps.StorageForMetadataClient),
+	}
+	go s.heartbeatLoop()
+	return s
+}
+
+func (s *MetadataServer) heartbeatLoop() {
+	ticker := time.NewTicker(HeartbeatInterval)
+	for {
+		for address, client := range s.storageClients {
+			ctx, cancel := context.WithTimeout(context.Background(), HeartbeatTimeout)
+			_, err := client.Heartbeat(ctx, &ps.HeartbeatRequest{})
+			if err != nil {
+				logrus.WithError(err).Warnf("Heartbeat failed on address %v", address)
+				delete(s.storageClients, address)
+			}
+			cancel()
+		}
+		<-ticker.C
 	}
 }
 
@@ -88,8 +113,9 @@ func (s *MetadataServer) Register(ctx context.Context, request *pm.RegisterReque
 		storageClient := ps.NewStorageForMetadataClient(connection)
 		s.storageClients[address] = storageClient
 		logrus.WithField("address", address).Info("Connect to new storage server")
+		return &pm.RegisterResponse{}, nil
 	}
-	return &pm.RegisterResponse{}, nil
+	return nil, osserror.ErrDuplicateConnection
 }
 
 func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
@@ -154,9 +180,9 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 		Key:     request.Key,
 		Tag:     request.Tag,
 		Address: request.Address,
-		Volume:  int(request.VolumeId),
-		Offset:  int(request.Offset),
-		Size:    int(request.Size),
+		Volume:  request.VolumeId,
+		Offset:  request.Offset,
+		Size:    request.Size,
 	}
 	if len(bucket.MemoMap) > LayerKeyThreshold || bucket.MemoSize > LayerSizeThreshold {
 		err := bucket.createNewLayer()

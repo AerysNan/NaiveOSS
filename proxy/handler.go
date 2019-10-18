@@ -116,6 +116,7 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 	ctx = context.Background()
 	putResponse, err := storageClient.Put(ctx, &ps.PutRequest{
 		Body: string(body),
+		Tag:  tag,
 	})
 	if err != nil {
 		writeError(w, err)

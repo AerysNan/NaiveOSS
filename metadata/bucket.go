@@ -14,9 +14,9 @@ type Entry struct {
 	Key     string
 	Tag     string
 	Address string
-	Volume  int
-	Offset  int
-	Size    int
+	Volume  int64
+	Offset  int64
+	Size    int64
 }
 
 type EntryList []*Entry

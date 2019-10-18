@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -18,9 +19,9 @@ import (
 )
 
 var (
-	VolumeMaxSize       int64 = 10
-	connectLoopInterval       = 5 * time.Second
-	connectTimeout            = 2 * time.Second
+	VolumeMaxSize   = int64(1 << 10)
+	ConnectInterval = 5 * time.Second
+	ConnectTimeout  = 2 * time.Second
 )
 
 type Volume struct {
@@ -54,10 +55,9 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 }
 
 func (s *StorageServer) connectToMetaServer() {
-	ticker := time.NewTicker(connectLoopInterval)
+	ticker := time.NewTicker(ConnectInterval)
 	for {
-		<-ticker.C
-		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), ConnectTimeout)
 		_, err := s.metadataClient.Register(ctx, &pm.RegisterRequest{
 			Address: s.address,
 		})
@@ -67,6 +67,7 @@ func (s *StorageServer) connectToMetaServer() {
 		} else {
 			return
 		}
+		<-ticker.C
 	}
 }
 
@@ -104,6 +105,10 @@ func (s *StorageServer) recoverSingleFile(name string) error {
 	return nil
 }
 
+func (s *StorageServer) Heartbeat(ctx context.Context, request *ps.HeartbeatRequest) (*ps.HeartbeatResponse, error) {
+	return &ps.HeartbeatResponse{}, nil
+}
+
 func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
 	volumeId := request.VolumeId
 	offset := request.Offset
@@ -133,6 +138,10 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 
 func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
 	data := request.Body
+	tag := fmt.Sprintf("%x", md5.Sum([]byte(data)))
+	if tag != request.Tag {
+		return nil, osserror.ErrUnauthenticated
+	}
 	size := int64(len(data))
 	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolume.volumeId))
 	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
