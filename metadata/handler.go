@@ -48,15 +48,18 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 		layer := bucket.SSTable[i]
 		file, err := os.Open(layer.Name)
 		if err != nil {
+			logrus.WithError(err).Errorf("Open file %v failed", layer.Name)
 			return nil, osserror.ErrServerInternal
 		}
 		bytes, err := ioutil.ReadAll(file)
 		if err != nil {
+			logrus.WithError(err).Errorf("Read file %v failed", layer.Name)
 			return nil, osserror.ErrServerInternal
 		}
 		entryList := make([]*Entry, 0)
 		err = json.Unmarshal(bytes, &entryList)
 		if err != nil {
+			logrus.WithError(err).Errorf("Unmarshal JSON from file %v failed", layer.Name)
 			return nil, osserror.ErrCorruptedFile
 		}
 		l, h := 0, len(entryList)-1

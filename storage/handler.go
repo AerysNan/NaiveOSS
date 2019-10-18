@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"oss/osserror"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 	"path"
@@ -106,20 +107,24 @@ func (s *StorageServer) recoverSingleFile(name string) error {
 func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
 	volumeId := request.VolumeId
 	offset := request.Offset
-	file, err := os.Open(path.Join(s.root, fmt.Sprintf("%d", volumeId)+".dat"))
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", volumeId))
+	file, err := os.Open(name)
 	if err != nil {
-		return nil, err
+		logrus.WithError(err).Errorf("Open file %v failed", name)
+		return nil, osserror.ErrServerInternal
 	}
 	defer file.Close()
 	bytes := make([]byte, 8)
 	_, err = file.ReadAt(bytes, offset)
 	if err != nil {
-		return nil, err
+		logrus.WithError(err).Errorf("Read file %v failed", name)
+		return nil, osserror.ErrServerInternal
 	}
 	data := make([]byte, int64(binary.BigEndian.Uint64(bytes)))
 	_, err = file.ReadAt(data, offset+8)
 	if err != nil {
-		return nil, err
+		logrus.WithError(err).Errorf("Read file %v failed", name)
+		return nil, osserror.ErrServerInternal
 	}
 	return &ps.GetResponse{
 		Body: string(data),
@@ -129,25 +134,24 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
 	data := request.Body
 	size := int64(len(data))
-<<<<<<< Updated upstream
-	file, err := os.OpenFile(path.Join(s.root, fmt.Sprintf("%d", s.currentVolume.volumeId)+".dat"), os.O_APPEND|os.O_CREATE, 0766)
-=======
 	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolume.volumeId))
 	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
->>>>>>> Stashed changes
 	if err != nil {
-		return nil, err
+		logrus.WithError(err).Errorf("Open file %v failed", name)
+		return nil, osserror.ErrServerInternal
 	}
 	defer file.Close()
 	bytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(bytes, uint64(size))
 	_, err = file.Write(bytes)
 	if err != nil {
-		return nil, err
+		logrus.WithError(err).Errorf("Write file %v failed", name)
+		return nil, osserror.ErrServerInternal
 	}
 	_, err = file.Write([]byte(data))
 	if err != nil {
-		return nil, err
+		logrus.WithError(err).Errorf("Write file %v failed", name)
+		return nil, osserror.ErrServerInternal
 	}
 	response := &ps.PutResponse{
 		VolumeId: s.currentVolume.volumeId,

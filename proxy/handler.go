@@ -49,8 +49,9 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
-	p := checkParameter(w, r, []string{"bucket", "key"})
-	if p == nil {
+	p, err := checkParameter(w, r, []string{"bucket", "key"})
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	bucket, key := p[0], p[1]
@@ -117,8 +118,9 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
-	p := checkParameter(w, r, []string{"bucket", "key"})
-	if p == nil {
+	p, err := checkParameter(w, r, []string{"bucket", "key"})
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	bucket, key := p[0], p[1]
