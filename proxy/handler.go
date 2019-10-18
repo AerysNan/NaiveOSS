@@ -60,13 +60,15 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.Background()
+	tag := fmt.Sprintf("%x", md5.Sum([]byte(body)))
 	response, err := s.metadataClient.CheckMeta(ctx, &pm.CheckMetaRequest{
 		Bucket: bucket,
 		Key:    key,
-		Tag:    fmt.Sprintf("%x", md5.Sum([]byte(body))),
+		Tag:    tag,
 	})
 	if err != nil {
 		writeError(w, err)
+		return
 	}
 	if response.Existed {
 		w.WriteHeader(http.StatusOK)
@@ -91,10 +93,22 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 	}
 	storageClient := ps.NewStorageForProxyClient(connection)
 	ctx = context.Background()
-	_, err = storageClient.Put(ctx, &ps.PutRequest{
+	putResponse, err := storageClient.Put(ctx, &ps.PutRequest{
 		Body: string(body),
 	})
-	// TODO: put meta to metadata server
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	_, err = s.metadataClient.PutMeta(ctx, &pm.PutMetaRequest{
+		Bucket:   bucket,
+		Key:      key,
+		Tag:      tag,
+		Address:  address,
+		VolumeId: putResponse.VolumeId,
+		Offset:   putResponse.Offset,
+		Size:     int64(len(body)),
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -136,7 +150,10 @@ func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
 	}
 	storageClient := ps.NewStorageForProxyClient(connection)
 	ctx = context.Background()
-	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{})
+	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{
+		VolumeId: getMetaResponse.VolumeId,
+		Offset:   getMetaResponse.Offset,
+	})
 	if err != nil {
 		writeError(w, err)
 		return

@@ -36,9 +36,9 @@ message PutMetaRequest {
   string key = 2;
   string tag = 3;
   string address = 4;
-  string volume = 5;
-  int32 offset = 6;
-  int32 size = 7;
+  int64 volume_id = 5;
+  int64 offset = 6;
+  int64 size = 7;
 }
 
 message PutMetaResponse {}
@@ -50,6 +50,6 @@ message GetMetaRequest {
 
 message GetMetaResponse {
   string address = 1;
-  string volume = 2;
-  int32 offset = 3;
+  int64 volume_id = 2;
+  int64 offset = 3;
 }

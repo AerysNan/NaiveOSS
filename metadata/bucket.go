@@ -14,7 +14,7 @@ type Entry struct {
 	Key     string
 	Tag     string
 	Address string
-	Volume  string
+	Volume  int
 	Offset  int
 	Size    int
 }
