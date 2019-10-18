@@ -92,7 +92,6 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 	storageClient := ps.NewStorageForProxyClient(connection)
 	ctx = context.Background()
 	_, err = storageClient.Put(ctx, &ps.PutRequest{
-		Key:  key,
 		Body: string(body),
 	})
 	// TODO: put meta to metadata server
@@ -137,9 +136,7 @@ func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
 	}
 	storageClient := ps.NewStorageForProxyClient(connection)
 	ctx = context.Background()
-	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{
-		Key: key,
-	})
+	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{})
 	if err != nil {
 		writeError(w, err)
 		return
