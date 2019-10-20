@@ -1,23 +1,23 @@
 package main
 
 import (
-	"flag"
 	"net"
 	"oss/metadata"
 	pm "oss/proto/metadata"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 var (
-	address = flag.String("address", "127.0.0.1:8081", "listen address of metadata server")
-	root    = flag.String("root", "../data", "metadata file path")
-	debug   = flag.Bool("debug", false, "use debug level of loggin")
+	address = kingpin.Flag("address", "listen address of metadata server").Default("127.0.0.1:8081").String()
+	root    = kingpin.Flag("root", "metadata file path").Default("../data").String()
+	debug   = kingpin.Flag("debug", "use debug level of loggin").Default("false").Bool()
 )
 
 func main() {
-	flag.Parse()
+	kingpin.Parse()
 	if *debug {
 		logrus.SetLevel(logrus.DebugLevel)
 		logrus.Debug("Log level set to debug")

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"net"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
@@ -9,18 +8,18 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 var (
-	address  = flag.String("address", "127.0.0.1:8080", "listen address of storage server")
-	metadata = flag.String("metadata", "127.0.0.1:8081", "address of metadata server")
-	root     = flag.String("root", "../data", "storage root of object file")
-	debug    = flag.Bool("debug", false, "use debug level of loggin")
+	address  = kingpin.Flag("address", "listen address of storage server").Default("127.0.0.1:8080").String()
+	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("127.0.0.1:8081").String()
+	root     = kingpin.Flag("root", "metadata file path").Default("../data").String()
+	debug    = kingpin.Flag("debug", "use debug level of loggin").Default("false").Bool()
 )
 
 func main() {
-	flag.Int64Var(&storage.VolumeMaxSize, "volume-size", 1<<10, "maximum size of volume")
-	flag.Parse()
+	kingpin.Parse()
 	if *debug {
 		logrus.SetLevel(logrus.DebugLevel)
 		logrus.Debug("Log level set to debug")

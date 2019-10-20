@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"os"
+	"path"
+	"sync"
+	"time"
+
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
-	"path"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -30,7 +32,8 @@ type MetadataServer struct {
 
 	Root           string `json:"-"`
 	Address        string
-	TagMap         map[string]string
+	m              *sync.RWMutex
+	TagMap         map[string]*EntryMeta
 	Bucket         map[string]*Bucket
 	storageTimer   map[string]time.Time
 	storageClients map[string]ps.StorageForMetadataClient
@@ -40,7 +43,8 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 	s := &MetadataServer{
 		Root:           root,
 		Address:        address,
-		TagMap:         make(map[string]string),
+		m:              new(sync.RWMutex),
+		TagMap:         make(map[string]*EntryMeta),
 		Bucket:         make(map[string]*Bucket),
 		storageTimer:   make(map[string]time.Time),
 		storageClients: make(map[string]ps.StorageForMetadataClient),
@@ -52,7 +56,12 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 }
 
 func (s *MetadataServer) recover() {
-	file, err := os.Open(path.Join(s.Root, DumpFileName))
+	filePath := path.Join(s.Root, DumpFileName)
+	_, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		return
+	}
+	file, err := os.Open(filePath)
 	if err != nil {
 		logrus.WithError(err).Error("Open recover file failed")
 		return
@@ -72,6 +81,7 @@ func (s *MetadataServer) recover() {
 func (s *MetadataServer) heartbeatLoop() {
 	ticker := time.NewTicker(HeartbeatTimeout)
 	for {
+		s.m.Lock()
 		for address, t := range s.storageTimer {
 			if t.Add(HeartbeatTimeout).Before(time.Now()) {
 				logrus.WithField("address", address).Warn("Close expired storage connenction")
@@ -79,6 +89,7 @@ func (s *MetadataServer) heartbeatLoop() {
 				delete(s.storageClients, address)
 			}
 		}
+		s.m.Unlock()
 		<-ticker.C
 	}
 }
@@ -101,7 +112,7 @@ func (s *MetadataServer) dumpLoop() {
 		if err != nil {
 			logrus.WithError(err).Error("Write dump file failed")
 		}
-		file.Close()
+		_ = file.Close()
 	}
 }
 
@@ -117,6 +128,7 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 			logrus.WithError(err).Errorf("Open file %v failed", layer.Name)
 			return nil, status.Error(codes.Internal, "open index failed")
 		}
+		defer file.Close()
 		bytes, err := ioutil.ReadAll(file)
 		if err != nil {
 			logrus.WithError(err).Errorf("Read file %v failed", layer.Name)
@@ -145,7 +157,10 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 
 func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
 	address := request.Address
+	s.m.Lock()
+	defer s.m.Unlock()
 	_, ok := s.storageClients[address]
+
 	if !ok {
 		connection, err := grpc.Dial(request.Address, grpc.WithInsecure())
 		if err != nil {
@@ -161,48 +176,48 @@ func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatReq
 
 func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
 	bucketName := request.Bucket
+	s.m.Lock()
+	defer s.m.Unlock()
 	_, ok := s.Bucket[bucketName]
 	if ok {
 		return nil, status.Error(codes.AlreadyExists, "bucket already exist")
 	}
-	logrus.WithField("bucket", request.Bucket).Debug("Creat new bucket")
+	logrus.WithField("bucket", request.Bucket).Debug("Create new bucket")
 	bucket := &Bucket{
-		Name:     bucketName,
-		MemoMap:  make(map[string]*Entry),
-		SSTable:  make([]*Layer, 0),
-		MemoSize: 0,
+		Name:       bucketName,
+		MemoMap:    make(map[string]*Entry),
+		SSTable:    make([]*Layer, 0),
+		MemoSize:   0,
+		CreateTime: time.Now().Unix(),
 	}
 	s.Bucket[bucketName] = bucket
 	return &pm.CreateBucketResponse{}, nil
 }
 
 func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*pm.CheckMetaResponse, error) {
+	s.m.Lock()
+	defer s.m.Unlock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "bucket not found")
 	}
-	key, ok := s.TagMap[request.Tag]
+	meta, ok := s.TagMap[request.Tag]
 	if ok {
-		e, err := s.searchEntry(bucket, key)
-		if err != nil {
-			return nil, err
+		entry := &Entry{
+			Key:        request.Key,
+			Tag:        request.Tag,
+			Address:    meta.Address,
+			Volume:     meta.Volume,
+			Offset:     meta.Offset,
+			Size:       meta.Size,
+			CreateTime: time.Now().Unix(),
+			Delete:     false,
 		}
-		if e != nil {
-			entry := &Entry{
-				Key:     request.Key,
-				Tag:     request.Tag,
-				Address: e.Address,
-				Volume:  e.Volume,
-				Offset:  e.Offset,
-				Size:    e.Size,
-			}
-			bucket.MemoSize += e.Size
-			bucket.MemoMap[request.Key] = entry
-			return &pm.CheckMetaResponse{
-				Existed: true,
-				Address: "",
-			}, nil
-		}
+		bucket.MemoMap[request.Key] = entry
+		return &pm.CheckMetaResponse{
+			Existed: true,
+			Address: "",
+		}, nil
 	}
 	for address := range s.storageClients {
 		return &pm.CheckMetaResponse{
@@ -214,17 +229,20 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 }
 
 func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.PutMetaResponse, error) {
+	s.m.Lock()
+	defer s.m.Unlock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "bucket not exist")
 	}
 	entry := &Entry{
-		Key:     request.Key,
-		Tag:     request.Tag,
-		Address: request.Address,
-		Volume:  request.VolumeId,
-		Offset:  request.Offset,
-		Size:    request.Size,
+		Key:        request.Key,
+		Tag:        request.Tag,
+		Address:    request.Address,
+		Volume:     request.VolumeId,
+		Offset:     request.Offset,
+		Size:       request.Size,
+		CreateTime: time.Now().Unix(),
 	}
 	if len(bucket.MemoMap) > LayerKeyThreshold || bucket.MemoSize > LayerSizeThreshold {
 		err := bucket.createNewLayer()
@@ -232,12 +250,20 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 			return nil, err
 		}
 	}
-	s.TagMap[request.Tag] = request.Key
 	bucket.MemoMap[request.Key] = entry
 	bucket.MemoSize += request.Size
+	s.TagMap[request.Tag] = &EntryMeta{
+		Address: request.Address,
+		Volume:  request.VolumeId,
+		Offset:  request.Offset,
+		Size:    request.Size,
+	}
 	return &pm.PutMetaResponse{}, nil
 }
+
 func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.GetMetaResponse, error) {
+	s.m.RLock()
+	defer s.m.RUnlock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "bucket not exist")
@@ -246,12 +272,38 @@ func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest
 	if err != nil {
 		return nil, err
 	}
-	if entry == nil {
+	if entry == nil || entry.Delete {
 		return nil, status.Error(codes.NotFound, "object metadata not found")
 	}
 	return &pm.GetMetaResponse{
-		Address:  entry.Address,
-		VolumeId: int64(entry.Volume),
-		Offset:   int64(entry.Offset),
+		Address:    entry.Address,
+		VolumeId:   int64(entry.Volume),
+		Offset:     int64(entry.Offset),
+		Size:       int64(entry.Size),
+		CreateTime: int64(entry.CreateTime),
 	}, nil
+}
+
+func (s *MetadataServer) DeleteMeta(ctx context.Context, request *pm.DeleteMetaRequest) (*pm.DeleteMetaResponse, error) {
+	s.m.Lock()
+	defer s.m.Unlock()
+	bucket, ok := s.Bucket[request.Bucket]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "bucket not exist")
+	}
+	entry, err := s.searchEntry(bucket, request.Key)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil || entry.Delete {
+		return nil, status.Error(codes.NotFound, "object metadata not found")
+	}
+	_, ok = bucket.MemoMap[request.Key]
+	if ok {
+		bucket.MemoMap[request.Key].Delete = true
+	} else {
+		bucket.MemoMap[request.Key] = entry
+		entry.Delete = true
+	}
+	return &pm.DeleteMetaResponse{}, nil
 }

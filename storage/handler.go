@@ -5,14 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"io/ioutil"
 	"os"
-	pm "oss/proto/metadata"
-	ps "oss/proto/storage"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
-	"io/ioutil"
+	pm "oss/proto/metadata"
+	ps "oss/proto/storage"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -27,6 +28,15 @@ var (
 type Volume struct {
 	volumeId int64
 	size     int64
+	m        *sync.RWMutex
+}
+
+func NewVolume(id, size int64) *Volume {
+	return &Volume{
+		volumeId: id,
+		size:     size,
+		m:        new(sync.RWMutex),
+	}
 }
 
 type StorageServer struct {
@@ -37,18 +47,19 @@ type StorageServer struct {
 	address string
 	root    string
 
-	currentVolume *Volume
-	volumes       map[int64]*Volume
+	currentVolumeId int64
+	volumes         map[int64]*Volume
 }
 
 func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient) *StorageServer {
 	storageServer := &StorageServer{
-		metadataClient: metadataClient,
-		address:        address,
-		root:           root,
-		volumes:        make(map[int64]*Volume),
-		currentVolume:  new(Volume),
+		metadataClient:  metadataClient,
+		address:         address,
+		root:            root,
+		currentVolumeId: 0,
+		volumes:         make(map[int64]*Volume),
 	}
+	storageServer.volumes[0] = NewVolume(0, 0)
 	storageServer.recover()
 	go storageServer.heartbeatLoop()
 	return storageServer
@@ -68,6 +79,7 @@ func (s *StorageServer) recover() {
 			}
 		}
 	}
+	s.CheckVolumeFull()
 }
 
 func (s *StorageServer) recoverSingleFile(name string) error {
@@ -75,15 +87,16 @@ func (s *StorageServer) recoverSingleFile(name string) error {
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
 		return err
 	}
 	var volumeId int64
-	fmt.Sscanf(info.Name(), "%v.dat", &volumeId)
-	s.volumes[volumeId] = &Volume{
-		volumeId: volumeId,
-		size:     info.Size(),
+	_, _ = fmt.Sscanf(info.Name(), "%v.dat", &volumeId)
+	s.volumes[volumeId] = NewVolume(volumeId, info.Size())
+	if s.currentVolumeId < volumeId {
+		s.currentVolumeId = volumeId
 	}
 	return nil
 }
@@ -106,6 +119,8 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 	volumeId := request.VolumeId
 	offset := request.Offset
 	name := path.Join(s.root, fmt.Sprintf("%d.dat", volumeId))
+	s.volumes[volumeId].m.RLock()
+	defer s.volumes[volumeId].m.RUnlock()
 	file, err := os.Open(name)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
@@ -136,7 +151,10 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 		return nil, status.Error(codes.Unauthenticated, "data operation not authenticated")
 	}
 	size := int64(len(data))
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolume.volumeId))
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolumeId))
+	currentId := s.currentVolumeId
+	s.volumes[currentId].m.Lock()
+	defer s.volumes[currentId].m.Unlock()
 	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
@@ -156,13 +174,17 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 		return nil, status.Error(codes.Internal, "write data failed")
 	}
 	response := &ps.PutResponse{
-		VolumeId: s.currentVolume.volumeId,
-		Offset:   s.currentVolume.size,
+		VolumeId: s.volumes[s.currentVolumeId].volumeId,
+		Offset:   s.volumes[s.currentVolumeId].size,
 	}
-	s.currentVolume.size += 8 + size
-	if s.currentVolume.size >= VolumeMaxSize {
-		s.currentVolume.volumeId++
-		s.currentVolume.size = 0
-	}
+	s.volumes[s.currentVolumeId].size += 8 + size
+	s.CheckVolumeFull()
 	return response, nil
+}
+
+func (s *StorageServer) CheckVolumeFull() {
+	if s.volumes[s.currentVolumeId].size >= VolumeMaxSize {
+		s.currentVolumeId++
+		s.volumes[s.currentVolumeId] = NewVolume(s.currentVolumeId, 0)
+	}
 }

@@ -14,6 +14,7 @@ service MetadataForProxy {
   rpc CheckMeta(CheckMetaRequest) returns (CheckMetaResponse) {}
   rpc PutMeta(PutMetaRequest) returns (PutMetaResponse) {}
   rpc GetMeta(GetMetaRequest) returns (GetMetaResponse) {}
+  rpc DeleteMeta(DeleteMetaRequest) returns (DeleteMetaResponse) {}
 }
 
 message CreateBucketRequest { string bucket = 1; }
@@ -52,4 +53,13 @@ message GetMetaResponse {
   string address = 1;
   int64 volume_id = 2;
   int64 offset = 3;
+  int64 size = 4;
+  int64 create_time = 5;
 }
+
+message DeleteMetaRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message DeleteMetaResponse {}

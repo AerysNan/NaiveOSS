@@ -7,14 +7,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func checkParameter(r *http.Request, parameters []string) ([]string, error) {
-	result := make([]string, 0)
+func checkParameter(r *http.Request, parameters []string) (map[string]string, error) {
+	result := make(map[string]string, 0)
 	for _, p := range parameters {
 		value := r.Header.Get(p)
 		if len(value) == 0 {
 			return nil, status.Error(codes.Unknown, "missing parameter")
 		}
-		result = append(result, value)
+		result[p] = value
 	}
 	return result, nil
 }
