@@ -2,11 +2,10 @@ package storage
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"os"
-	"oss/osserror"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 	"path"
@@ -16,12 +15,13 @@ import (
 	"io/ioutil"
 
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
-	VolumeMaxSize   = int64(1 << 10)
-	ConnectInterval = 5 * time.Second
-	ConnectTimeout  = 2 * time.Second
+	VolumeMaxSize     = int64(1 << 10)
+	HeartbeatInterval = 5 * time.Second
 )
 
 type Volume struct {
@@ -50,25 +50,8 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 		currentVolume:  new(Volume),
 	}
 	storageServer.recover()
-	go storageServer.connectToMetaServer()
+	go storageServer.heartbeatLoop()
 	return storageServer
-}
-
-func (s *StorageServer) connectToMetaServer() {
-	ticker := time.NewTicker(ConnectInterval)
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), ConnectTimeout)
-		_, err := s.metadataClient.Register(ctx, &pm.RegisterRequest{
-			Address: s.address,
-		})
-		cancel()
-		if err != nil {
-			logrus.WithError(err).Error("Connect to metadata server failed")
-		} else {
-			return
-		}
-		<-ticker.C
-	}
 }
 
 func (s *StorageServer) recover() {
@@ -105,8 +88,18 @@ func (s *StorageServer) recoverSingleFile(name string) error {
 	return nil
 }
 
-func (s *StorageServer) Heartbeat(ctx context.Context, request *ps.HeartbeatRequest) (*ps.HeartbeatResponse, error) {
-	return &ps.HeartbeatResponse{}, nil
+func (s *StorageServer) heartbeatLoop() {
+	ticker := time.NewTicker(HeartbeatInterval)
+	for {
+		ctx := context.Background()
+		_, err := s.metadataClient.Heartbeat(ctx, &pm.HeartbeatRequest{
+			Address: s.address,
+		})
+		if err != nil {
+			logrus.WithError(err).Error("Heartbeat failed")
+		}
+		<-ticker.C
+	}
 }
 
 func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
@@ -116,20 +109,20 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 	file, err := os.Open(name)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
-		return nil, osserror.ErrServerInternal
+		return nil, status.Error(codes.Internal, "Open data failed")
 	}
 	defer file.Close()
 	bytes := make([]byte, 8)
 	_, err = file.ReadAt(bytes, offset)
 	if err != nil {
 		logrus.WithError(err).Errorf("Read file %v failed", name)
-		return nil, osserror.ErrServerInternal
+		return nil, status.Error(codes.Internal, "read data failed")
 	}
 	data := make([]byte, int64(binary.BigEndian.Uint64(bytes)))
 	_, err = file.ReadAt(data, offset+8)
 	if err != nil {
 		logrus.WithError(err).Errorf("Read file %v failed", name)
-		return nil, osserror.ErrServerInternal
+		return nil, status.Error(codes.Internal, "read data failed")
 	}
 	return &ps.GetResponse{
 		Body: string(data),
@@ -138,16 +131,16 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 
 func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
 	data := request.Body
-	tag := fmt.Sprintf("%x", md5.Sum([]byte(data)))
+	tag := fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
 	if tag != request.Tag {
-		return nil, osserror.ErrUnauthenticated
+		return nil, status.Error(codes.Unauthenticated, "data operation not authenticated")
 	}
 	size := int64(len(data))
 	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolume.volumeId))
 	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
-		return nil, osserror.ErrServerInternal
+		return nil, status.Error(codes.Internal, "open data failed")
 	}
 	defer file.Close()
 	bytes := make([]byte, 8)
@@ -155,12 +148,12 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 	_, err = file.Write(bytes)
 	if err != nil {
 		logrus.WithError(err).Errorf("Write file %v failed", name)
-		return nil, osserror.ErrServerInternal
+		return nil, status.Error(codes.Internal, "write data failed")
 	}
 	_, err = file.Write([]byte(data))
 	if err != nil {
 		logrus.WithError(err).Errorf("Write file %v failed", name)
-		return nil, osserror.ErrServerInternal
+		return nil, status.Error(codes.Internal, "write data failed")
 	}
 	response := &ps.PutResponse{
 		VolumeId: s.currentVolume.volumeId,

@@ -2,18 +2,17 @@ package proxy
 
 import (
 	"net/http"
-	"oss/osserror"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func checkParameter(r *http.Request, parameters []string) ([]string, error) {
 	result := make([]string, 0)
 	for _, p := range parameters {
-		if len(r.URL.Query()[p]) == 0 {
-			return nil, osserror.ErrMissingParameter
-		}
-		value := r.URL.Query()[p][0]
+		value := r.Header.Get(p)
 		if len(value) == 0 {
-			return nil, osserror.ErrEmptyParameter
+			return nil, status.Error(codes.Unknown, "missing parameter")
 		}
 		result = append(result, value)
 	}
@@ -21,25 +20,60 @@ func checkParameter(r *http.Request, parameters []string) ([]string, error) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	switch err {
-	case osserror.ErrCorruptedFile:
-		w.WriteHeader(http.StatusInternalServerError)
-	case osserror.ErrServerInternal:
-		w.WriteHeader(http.StatusInternalServerError)
-	case osserror.ErrBucketNotExist:
+	if err == nil {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+		return
+	}
+	s, ok := status.FromError(err)
+	if !ok {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	switch s.Code() {
+	case codes.OK:
+		w.WriteHeader(http.StatusForbidden)
+	case codes.Canceled:
+		w.WriteHeader(http.StatusNotAcceptable)
+	case codes.Unknown:
+		w.WriteHeader(http.StatusForbidden)
+	case codes.InvalidArgument:
+		w.WriteHeader(http.StatusBadRequest)
+	case codes.DeadlineExceeded:
+		w.WriteHeader(http.StatusRequestTimeout)
+	case codes.NotFound:
 		w.WriteHeader(http.StatusNotFound)
-	case osserror.ErrEmptyParameter:
-		w.WriteHeader(http.StatusBadRequest)
-	case osserror.ErrMissingParameter:
-		w.WriteHeader(http.StatusBadRequest)
-	case osserror.ErrBucketAlreadyExist:
+	case codes.AlreadyExists:
 		w.WriteHeader(http.StatusConflict)
-	case osserror.ErrNoStorageAvailable:
+	case codes.PermissionDenied:
+		w.WriteHeader(http.StatusUnauthorized)
+	case codes.ResourceExhausted:
 		w.WriteHeader(http.StatusInsufficientStorage)
-	case osserror.ErrObjectMetadataNotFound:
-		w.WriteHeader(http.StatusNotFound)
-	case osserror.ErrUnauthenticated:
+	case codes.FailedPrecondition:
+		w.WriteHeader(http.StatusFailedDependency)
+	case codes.Aborted:
+		w.WriteHeader(http.StatusForbidden)
+	case codes.OutOfRange:
+		w.WriteHeader(http.StatusBadRequest)
+	case codes.Unimplemented:
+		w.WriteHeader(http.StatusNotImplemented)
+	case codes.Internal:
+		w.WriteHeader(http.StatusInternalServerError)
+	case codes.Unavailable:
+		w.WriteHeader(http.StatusUnavailableForLegalReasons)
+	case codes.DataLoss:
+		w.WriteHeader(http.StatusUnauthorized)
+	case codes.Unauthenticated:
 		w.WriteHeader(http.StatusUnauthorized)
 	}
-	_, _ = w.Write([]byte(err.Error()))
+	_, _ = w.Write([]byte(s.Message()))
+}
+
+func writeResponse(w http.ResponseWriter, body []byte) {
+	w.WriteHeader(http.StatusOK)
+	if body == nil {
+		_, _ = w.Write([]byte("OK"))
+		return
+	}
+	_, _ = w.Write(body)
 }

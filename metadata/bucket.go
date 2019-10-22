@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"oss/osserror"
 	"sort"
 
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Entry struct {
@@ -39,12 +40,11 @@ type Layer struct {
 }
 
 type Bucket struct {
-	Name      string            // bucket name
-	TagMap    map[string]string // tag -> key
-	MemoMap   map[string]*Entry // key -> entry
-	SSTable   []*Layer          // read only layer list
-	MemoSize  int               // size of mempmap
-	MemoCount int               // # of read only layer in memory
+	Name     string            // bucket name
+	TagMap   map[string]string // tag -> key
+	MemoMap  map[string]*Entry // key -> entry
+	SSTable  []*Layer          // read only layer list
+	MemoSize int64             // size of mempmap
 }
 
 func (b *Bucket) createNewLayer() error {
@@ -57,19 +57,19 @@ func (b *Bucket) createNewLayer() error {
 	bytes, err := json.Marshal(entryList)
 	if err != nil {
 		logrus.WithError(err).Warn("Marshal JSON failed")
-		return osserror.ErrServerInternal
+		return status.Error(codes.Internal, "marshal JSON failed")
 	}
 	name := fmt.Sprintf("%v-%v", b.Name, len(b.SSTable))
 	file, err := os.Create(name)
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Create layer file failed")
-		return osserror.ErrServerInternal
+		return status.Error(codes.Internal, "create layer file failed")
 	}
 	defer file.Close()
 	_, err = file.Write(bytes)
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Write layer file failed")
-		return osserror.ErrServerInternal
+		return status.Error(codes.Internal, "write layer file failed")
 	}
 	layer := &Layer{
 		Name: name,

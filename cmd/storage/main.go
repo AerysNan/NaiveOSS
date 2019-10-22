@@ -14,7 +14,7 @@ import (
 var (
 	address  = flag.String("address", "127.0.0.1:8080", "listen address of storage server")
 	metadata = flag.String("metadata", "127.0.0.1:8081", "address of metadata server")
-	root     = flag.String("root", ".", "storage root of object file")
+	root     = flag.String("root", "../data", "storage root of object file")
 	debug    = flag.Bool("debug", false, "use debug level of loggin")
 )
 

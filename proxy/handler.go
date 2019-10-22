@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -12,6 +12,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var maxStorageConnection = 10
@@ -47,7 +49,7 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logrus.Debug("Handle get method")
 		s.get(w, r)
 	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		writeError(w, status.Error(codes.Unimplemented, "method not allowed"))
 	}
 }
 
@@ -65,7 +67,7 @@ func (s *ProxyServer) post(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	writeResponse(w, nil)
 }
 
 func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +83,7 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.Background()
-	tag := fmt.Sprintf("%x", md5.Sum([]byte(body)))
+	tag := fmt.Sprintf("%x", sha256.Sum256(body))
 	response, err := s.metadataClient.CheckMeta(ctx, &pm.CheckMetaRequest{
 		Bucket: bucket,
 		Key:    key,
@@ -92,7 +94,7 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if response.Existed {
-		w.WriteHeader(http.StatusOK)
+		writeResponse(w, nil)
 		return
 	}
 	address := response.Address
@@ -135,7 +137,7 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	writeResponse(w, nil)
 }
 
 func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +183,5 @@ func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(getResponse.Body))
+	writeResponse(w, []byte(getResponse.Body))
 }

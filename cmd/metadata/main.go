@@ -12,6 +12,7 @@ import (
 
 var (
 	address = flag.String("address", "127.0.0.1:8081", "listen address of metadata server")
+	root    = flag.String("root", "../data", "metadata file path")
 	debug   = flag.Bool("debug", false, "use debug level of loggin")
 )
 
@@ -21,7 +22,7 @@ func main() {
 		logrus.SetLevel(logrus.DebugLevel)
 		logrus.Debug("Log level set to debug")
 	}
-	metadataServer := metadata.NewMetadataServer(*address)
+	metadataServer := metadata.NewMetadataServer(*address, *root)
 	listen, err := net.Listen("tcp", *address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")

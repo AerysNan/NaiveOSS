@@ -5,62 +5,101 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"os"
-	"oss/osserror"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
+	"path"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
 	LayerKeyThreshold  = 1000
-	LayerSizeThreshold = 1 << 30
-
-	HeartbeatInterval = 5 * time.Second
-	HeartbeatTimeout  = 2 * time.Second
-	HeartbeatFailure  = 3
-
-	DefaultBucketName = "default"
-	DeletedValue      = "ObjectDeleted"
-	DeletedTag        = "750b7395a7c2506ef974069bb817d59e"
+	LayerSizeThreshold = int64(1 << 30)
+	DumpFileName       = "metadata.json"
+	DumpInterval       = 5 * time.Second
+	HeartbeatTimeout   = 10 * time.Second
 )
 
 type MetadataServer struct {
-	pm.MetadataForStorageServer
-	pm.MetadataForProxyServer
+	pm.MetadataForStorageServer `json:"-"`
+	pm.MetadataForProxyServer   `json:"-"`
 
-	bucket         map[string]*Bucket
-	address        string
-	storageTokens  map[string]int64
+	Root           string `json:"-"`
+	Address        string
+	Bucket         map[string]*Bucket
+	storageTimer   map[string]time.Time
 	storageClients map[string]ps.StorageForMetadataClient
 }
 
-func NewMetadataServer(address string) *MetadataServer {
+func NewMetadataServer(address string, root string) *MetadataServer {
 	s := &MetadataServer{
-		address:        address,
-		bucket:         make(map[string]*Bucket),
-		storageTokens:  make(map[string]int64),
+		Root:           root,
+		Address:        address,
+		Bucket:         make(map[string]*Bucket),
+		storageTimer:   make(map[string]time.Time),
 		storageClients: make(map[string]ps.StorageForMetadataClient),
 	}
+	s.recover()
+	go s.dumpLoop()
 	go s.heartbeatLoop()
 	return s
 }
 
+func (s *MetadataServer) recover() {
+	file, err := os.Open(path.Join(s.Root, DumpFileName))
+	if err != nil {
+		logrus.WithError(err).Error("Open recover file failed")
+		return
+	}
+	defer file.Close()
+	bytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		logrus.WithError(err).Error("Read recover file failed")
+		return
+	}
+	err = json.Unmarshal(bytes, &s)
+	if err != nil {
+		logrus.WithError(err).Error("Unmarshal JSON failed")
+	}
+}
+
 func (s *MetadataServer) heartbeatLoop() {
-	ticker := time.NewTicker(HeartbeatInterval)
+	ticker := time.NewTicker(HeartbeatTimeout)
 	for {
-		for address, client := range s.storageClients {
-			ctx, cancel := context.WithTimeout(context.Background(), HeartbeatTimeout)
-			_, err := client.Heartbeat(ctx, &ps.HeartbeatRequest{})
-			if err != nil {
-				logrus.WithError(err).Warnf("Heartbeat failed on address %v", address)
+		for address, t := range s.storageTimer {
+			if t.Add(HeartbeatTimeout).Before(time.Now()) {
+				logrus.WithField("address", address).Warn("Close expired storage connenction")
+				delete(s.storageTimer, address)
 				delete(s.storageClients, address)
 			}
-			cancel()
 		}
 		<-ticker.C
+	}
+}
+
+func (s *MetadataServer) dumpLoop() {
+	ticker := time.NewTicker(DumpInterval)
+	for {
+		<-ticker.C
+		bytes, err := json.Marshal(s)
+		if err != nil {
+			logrus.WithError(err).Error("Marshal JSON failed")
+			continue
+		}
+		file, err := os.OpenFile(path.Join(s.Root, DumpFileName), os.O_CREATE|os.O_WRONLY, 0766)
+		if err != nil {
+			logrus.WithError(err).Error("Open dump file falied")
+			continue
+		}
+		_, err = file.Write(bytes)
+		if err != nil {
+			logrus.WithError(err).Error("Write dump file failed")
+		}
+		file.Close()
 	}
 }
 
@@ -74,18 +113,18 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 		file, err := os.Open(layer.Name)
 		if err != nil {
 			logrus.WithError(err).Errorf("Open file %v failed", layer.Name)
-			return nil, osserror.ErrServerInternal
+			return nil, status.Error(codes.Internal, "open index failed")
 		}
 		bytes, err := ioutil.ReadAll(file)
 		if err != nil {
 			logrus.WithError(err).Errorf("Read file %v failed", layer.Name)
-			return nil, osserror.ErrServerInternal
+			return nil, status.Error(codes.Internal, "read index failed")
 		}
 		entryList := make([]*Entry, 0)
 		err = json.Unmarshal(bytes, &entryList)
 		if err != nil {
 			logrus.WithError(err).Errorf("Unmarshal JSON from file %v failed", layer.Name)
-			return nil, osserror.ErrCorruptedFile
+			return nil, status.Error(codes.DataLoss, "index data corrupted")
 		}
 		l, h := 0, len(entryList)-1
 		for l <= h {
@@ -102,7 +141,7 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 	return nil, nil
 }
 
-func (s *MetadataServer) Register(ctx context.Context, request *pm.RegisterRequest) (*pm.RegisterResponse, error) {
+func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
 	address := request.Address
 	_, ok := s.storageClients[address]
 	if !ok {
@@ -113,16 +152,16 @@ func (s *MetadataServer) Register(ctx context.Context, request *pm.RegisterReque
 		storageClient := ps.NewStorageForMetadataClient(connection)
 		s.storageClients[address] = storageClient
 		logrus.WithField("address", address).Info("Connect to new storage server")
-		return &pm.RegisterResponse{}, nil
 	}
-	return nil, osserror.ErrDuplicateConnection
+	s.storageTimer[address] = time.Now()
+	return &pm.HeartbeatResponse{}, nil
 }
 
 func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
 	bucketName := request.Bucket
-	_, ok := s.bucket[bucketName]
+	_, ok := s.Bucket[bucketName]
 	if ok {
-		return nil, osserror.ErrBucketAlreadyExist
+		return nil, status.Error(codes.AlreadyExists, "bucket already exist")
 	}
 	logrus.WithField("bucket", request.Bucket).Debug("Creat new bucket")
 	bucket := &Bucket{
@@ -132,14 +171,14 @@ func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBuc
 		SSTable:  make([]*Layer, 0),
 		MemoSize: 0,
 	}
-	s.bucket[bucketName] = bucket
+	s.Bucket[bucketName] = bucket
 	return &pm.CreateBucketResponse{}, nil
 }
 
 func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*pm.CheckMetaResponse, error) {
-	bucket, ok := s.bucket[request.Bucket]
+	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
-		return nil, osserror.ErrBucketNotExist
+		return nil, status.Error(codes.NotFound, "bucket not found")
 	}
 	key, ok := bucket.TagMap[request.Tag]
 	if ok {
@@ -154,7 +193,9 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 				Address: e.Address,
 				Volume:  e.Volume,
 				Offset:  e.Offset,
+				Size:    e.Size,
 			}
+			bucket.MemoSize += e.Size
 			bucket.MemoMap[request.Key] = entry
 			return &pm.CheckMetaResponse{
 				Existed: true,
@@ -168,13 +209,13 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 			Address: address,
 		}, nil
 	}
-	return nil, osserror.ErrNoStorageAvailable
+	return nil, status.Error(codes.Unavailable, "")
 }
 
 func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.PutMetaResponse, error) {
-	bucket, ok := s.bucket[request.Bucket]
+	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
-		return nil, osserror.ErrBucketNotExist
+		return nil, status.Error(codes.NotFound, "bucket not exist")
 	}
 	entry := &Entry{
 		Key:     request.Key,
@@ -192,20 +233,20 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 	}
 	bucket.TagMap[request.Tag] = request.Key
 	bucket.MemoMap[request.Key] = entry
-	bucket.MemoSize += int(request.Size)
+	bucket.MemoSize += request.Size
 	return &pm.PutMetaResponse{}, nil
 }
 func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.GetMetaResponse, error) {
-	bucket, ok := s.bucket[request.Bucket]
+	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
-		return nil, osserror.ErrBucketNotExist
+		return nil, status.Error(codes.NotFound, "bucket not exist")
 	}
 	entry, err := s.searchEntry(bucket, request.Key)
 	if err != nil {
 		return nil, err
 	}
 	if entry == nil {
-		return nil, osserror.ErrObjectMetadataNotFound
+		return nil, status.Error(codes.NotFound, "object metadata not found")
 	}
 	return &pm.GetMetaResponse{
 		Address:  entry.Address,

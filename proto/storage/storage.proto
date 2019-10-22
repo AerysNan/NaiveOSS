@@ -1,13 +1,7 @@
 syntax = "proto3";
 package ps;
 
-service StorageForMetadata {
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
-}
-
-message HeartbeatRequest {}
-
-message HeartbeatResponse {}
+service StorageForMetadata {}
 
 service StorageForProxy {
   rpc Get(GetRequest) returns (GetResponse) {}
