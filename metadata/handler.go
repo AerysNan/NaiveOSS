@@ -30,6 +30,7 @@ type MetadataServer struct {
 
 	Root           string `json:"-"`
 	Address        string
+	TagMap         map[string]string
 	Bucket         map[string]*Bucket
 	storageTimer   map[string]time.Time
 	storageClients map[string]ps.StorageForMetadataClient
@@ -39,6 +40,7 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 	s := &MetadataServer{
 		Root:           root,
 		Address:        address,
+		TagMap:         make(map[string]string),
 		Bucket:         make(map[string]*Bucket),
 		storageTimer:   make(map[string]time.Time),
 		storageClients: make(map[string]ps.StorageForMetadataClient),
@@ -166,7 +168,6 @@ func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBuc
 	logrus.WithField("bucket", request.Bucket).Debug("Creat new bucket")
 	bucket := &Bucket{
 		Name:     bucketName,
-		TagMap:   make(map[string]string),
 		MemoMap:  make(map[string]*Entry),
 		SSTable:  make([]*Layer, 0),
 		MemoSize: 0,
@@ -180,7 +181,7 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 	if !ok {
 		return nil, status.Error(codes.NotFound, "bucket not found")
 	}
-	key, ok := bucket.TagMap[request.Tag]
+	key, ok := s.TagMap[request.Tag]
 	if ok {
 		e, err := s.searchEntry(bucket, key)
 		if err != nil {
@@ -231,7 +232,7 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 			return nil, err
 		}
 	}
-	bucket.TagMap[request.Tag] = request.Key
+	s.TagMap[request.Tag] = request.Key
 	bucket.MemoMap[request.Key] = entry
 	bucket.MemoSize += request.Size
 	return &pm.PutMetaResponse{}, nil

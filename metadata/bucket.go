@@ -35,13 +35,13 @@ func (l EntryList) Swap(i int, j int) {
 }
 
 type Layer struct {
-	Name string
-	Size int
+	Name    string
+	Size    int64
+	Volumes []int64
 }
 
 type Bucket struct {
 	Name     string            // bucket name
-	TagMap   map[string]string // tag -> key
 	MemoMap  map[string]*Entry // key -> entry
 	SSTable  []*Layer          // read only layer list
 	MemoSize int64             // size of mempmap
@@ -73,7 +73,7 @@ func (b *Bucket) createNewLayer() error {
 	}
 	layer := &Layer{
 		Name: name,
-		Size: len(bytes),
+		Size: int64(len(bytes)),
 	}
 	b.SSTable = append(b.SSTable, layer)
 	return nil
