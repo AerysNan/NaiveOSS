@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sync"
 
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 
-	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,44 +22,26 @@ type ProxyServer struct {
 	http.Handler
 	metadataClient pm.MetadataForProxyClient
 	storageClients map[string]*grpc.ClientConn
-
-	address string
+	m              *sync.RWMutex
+	address        string
 }
 
 func NewProxyServer(address string, metadataClient pm.MetadataForProxyClient) *ProxyServer {
 	return &ProxyServer{
 		address:        address,
+		m:              new(sync.RWMutex),
 		metadataClient: metadataClient,
 		storageClients: make(map[string]*grpc.ClientConn),
 	}
 }
 
-func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r == nil {
-		return
-	}
-	switch r.Method {
-	case http.MethodPost:
-		logrus.Debug("Handle post method")
-		s.post(w, r)
-	case http.MethodPut:
-		logrus.Debug("Handle put method")
-		s.put(w, r)
-	case http.MethodGet:
-		logrus.Debug("Handle get method")
-		s.get(w, r)
-	default:
-		writeError(w, status.Error(codes.Unimplemented, "method not allowed"))
-	}
-}
-
-func (s *ProxyServer) post(w http.ResponseWriter, r *http.Request) {
+func (s *ProxyServer) createBucket(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	bucket := p[0]
+	bucket := p["bucket"]
 	_, err = s.metadataClient.CreateBucket(context.Background(), &pm.CreateBucketRequest{
 		Bucket: bucket,
 	})
@@ -70,13 +52,13 @@ func (s *ProxyServer) post(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(r, []string{"bucket", "key"})
+func (s *ProxyServer) putObject(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket", "key", "tag"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	bucket, key := p[0], p[1]
+	bucket, key, rtag := p["bucket"], p["key"], p["tag"]
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, err)
@@ -84,6 +66,10 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.Background()
 	tag := fmt.Sprintf("%x", sha256.Sum256(body))
+	if tag != rtag {
+		writeError(w, status.Error(codes.Unknown, "Data transmission error"))
+		return
+	}
 	response, err := s.metadataClient.CheckMeta(ctx, &pm.CheckMetaRequest{
 		Bucket: bucket,
 		Key:    key,
@@ -98,22 +84,25 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	address := response.Address
+	s.m.Lock()
 	connection, ok := s.storageClients[address]
 	if !ok {
 		connection, err = grpc.Dial(address, grpc.WithInsecure())
 		if err != nil {
 			writeError(w, err)
+			s.m.Unlock()
 			return
 		}
 		if len(s.storageClients) >= maxStorageConnection {
 			for k := range s.storageClients {
-				s.storageClients[k].Close()
+				_ = s.storageClients[k].Close()
 				delete(s.storageClients, k)
 				s.storageClients[address] = connection
 				break
 			}
 		}
 	}
+	s.m.Unlock()
 	storageClient := ps.NewStorageForProxyClient(connection)
 	ctx = context.Background()
 	putResponse, err := storageClient.Put(ctx, &ps.PutRequest{
@@ -140,13 +129,13 @@ func (s *ProxyServer) put(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
+func (s *ProxyServer) getObject(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "key"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	bucket, key := p[0], p[1]
+	bucket, key := p["bucket"], p["key"]
 	ctx := context.Background()
 	getMetaResponse, err := s.metadataClient.GetMeta(ctx, &pm.GetMetaRequest{
 		Bucket: bucket,
@@ -157,22 +146,25 @@ func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	address := getMetaResponse.Address
+	s.m.Lock()
 	connection, ok := s.storageClients[address]
 	if !ok {
 		connection, err = grpc.Dial(address, grpc.WithInsecure())
 		if err != nil {
 			writeError(w, err)
+			s.m.Unlock()
 			return
 		}
 		if len(s.storageClients) >= maxStorageConnection {
 			for k := range s.storageClients {
-				s.storageClients[k].Close()
+				_ = s.storageClients[k].Close()
 				delete(s.storageClients, k)
 				s.storageClients[address] = connection
 				break
 			}
 		}
 	}
+	s.m.Unlock()
 	storageClient := ps.NewStorageForProxyClient(connection)
 	ctx = context.Background()
 	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{
@@ -184,4 +176,40 @@ func (s *ProxyServer) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, []byte(getResponse.Body))
+}
+
+func (s *ProxyServer) deleteObject(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket", "key"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	bucket, key := p["bucket"], p["key"]
+	_, err = s.metadataClient.DeleteMeta(context.Background(), &pm.DeleteMetaRequest{
+		Bucket: bucket,
+		Key:    key,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResponse(w, nil)
+}
+
+func (s *ProxyServer) getObjectMeta(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket", "key"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	bucket, key := p["bucket"], p["key"]
+	response, err := s.metadataClient.GetMeta(context.Background(), &pm.GetMetaRequest{
+		Bucket: bucket,
+		Key:    key,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResponse(w, []byte(response.String()))
 }

@@ -12,12 +12,14 @@ import (
 )
 
 type Entry struct {
-	Key     string
-	Tag     string
-	Address string
-	Volume  int64
-	Offset  int64
-	Size    int64
+	Key        string
+	Tag        string
+	Address    string
+	Volume     int64
+	Offset     int64
+	Size       int64
+	CreateTime int64
+	Delete     bool
 }
 
 type EntryList []*Entry
@@ -34,6 +36,13 @@ func (l EntryList) Swap(i int, j int) {
 	l[i], l[j] = l[j], l[i]
 }
 
+type EntryMeta struct {
+	Address string
+	Volume  int64
+	Offset  int64
+	Size    int64
+}
+
 type Layer struct {
 	Name    string
 	Size    int64
@@ -41,10 +50,11 @@ type Layer struct {
 }
 
 type Bucket struct {
-	Name     string            // bucket name
-	MemoMap  map[string]*Entry // key -> entry
-	SSTable  []*Layer          // read only layer list
-	MemoSize int64             // size of mempmap
+	Name       string            // bucket name
+	MemoMap    map[string]*Entry // key -> entry
+	SSTable    []*Layer          // read only layer list
+	MemoSize   int64             // size of mempmap
+	CreateTime int64             // create timestamp
 }
 
 func (b *Bucket) createNewLayer() error {
@@ -71,9 +81,18 @@ func (b *Bucket) createNewLayer() error {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Write layer file failed")
 		return status.Error(codes.Internal, "write layer file failed")
 	}
+	v := make(map[int64]struct{})
+	for _, entry := range entryList {
+		v[entry.Volume] = struct{}{}
+	}
+	volumes := make([]int64, 0)
+	for k := range v {
+		volumes = append(volumes, k)
+	}
 	layer := &Layer{
-		Name: name,
-		Size: int64(len(bytes)),
+		Name:    name,
+		Size:    int64(len(bytes)),
+		Volumes: volumes,
 	}
 	b.SSTable = append(b.SSTable, layer)
 	return nil
