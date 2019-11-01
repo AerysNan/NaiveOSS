@@ -52,6 +52,22 @@ func (s *ProxyServer) createBucket(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
+func (s *ProxyServer) deleteBucket(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket"})
+	if err != nil {
+		writeError(w, err)
+	}
+	bucket := p["bucket"]
+	_, err = s.metadataClient.DeleteBucket(context.Background(), &pm.DeleteBucketRequest{
+		Bucket: bucket,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResponse(w, nil)
+}
+
 func (s *ProxyServer) putObject(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "key", "tag"})
 	if err != nil {

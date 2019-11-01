@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -50,6 +51,7 @@ type Layer struct {
 }
 
 type Bucket struct {
+	m          sync.RWMutex
 	Name       string            // bucket name
 	MemoMap    map[string]*Entry // key -> entry
 	SSTable    []*Layer          // read only layer list

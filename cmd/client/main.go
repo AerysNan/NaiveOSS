@@ -14,16 +14,17 @@ import (
 )
 
 var (
-	client        = kingpin.New("oss", "OSS Client")
-	createBucket  = client.Command("create", "Create a bucket")
-	getObject     = client.Command("get", "Get object from oss")
-	putObject     = client.Command("put", "Put object to oss")
-	deleteObject  = client.Command("delete", "Delete object in oss")
-	getObjectMeta = client.Command("getmeta", "Get object meta from oss")
-	endpoint      = client.Flag("a", "address of object storage service").Default("http://127.0.0.1:8082").String()
-	bucket        = client.Flag("b", "bucket name").Default("default").String()
-	key           = client.Flag("k", "key name").Default("key").String()
-	body          = client.Flag("f", "content file path").Default("").String()
+	client       = kingpin.New("oss", "OSS Client")
+	createBucket = client.Command("create-bucket", "Create a bucket")
+	deleteBucket = client.Command("delete-bucket", "Delete a bucket")
+	getObject    = client.Command("get-object", "Get object from oss")
+	putObject    = client.Command("put-obecjt", "Put object to oss")
+	deleteObject = client.Command("delete-object", "Delete object in oss")
+	getMetadata  = client.Command("get-metadata", "Get object meta from oss")
+	endpoint     = client.Flag("a", "address of object storage service").Default("http://127.0.0.1:8082").String()
+	bucket       = client.Flag("b", "bucket name").Default("default").String()
+	key          = client.Flag("k", "key name").Default("key").String()
+	body         = client.Flag("f", "content file path").Default("").String()
 )
 
 func build() (*http.Request, error) {
@@ -31,13 +32,19 @@ func build() (*http.Request, error) {
 	var err error
 	switch kingpin.MustParse(client.Parse(os.Args[1:])) {
 	case createBucket.FullCommand():
-		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *endpoint, "/api/createBucket"), nil)
+		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *endpoint, "/api/bucket"), nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Add("bucket", *bucket)
+	case deleteBucket.FullCommand():
+		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *endpoint, "/api/bucket"), nil)
 		if err != nil {
 			return nil, err
 		}
 		request.Header.Add("bucket", *bucket)
 	case getObject.FullCommand():
-		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *endpoint, "/api/getObject"), nil)
+		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *endpoint, "/api/object"), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -53,7 +60,7 @@ func build() (*http.Request, error) {
 			return nil, err
 		}
 		reader := bytes.NewReader(content)
-		request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *endpoint, "/api/putObject"), reader)
+		request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *endpoint, "/api/object"), reader)
 		if err != nil {
 			return nil, err
 		}
@@ -61,21 +68,21 @@ func build() (*http.Request, error) {
 		request.Header.Add("key", *key)
 		request.Header.Add("tag", fmt.Sprintf("%x", sha256.Sum256(content)))
 	case deleteObject.FullCommand():
-		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *endpoint, "/api/deleteObject"), nil)
+		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *endpoint, "/api/object"), nil)
 		if err != nil {
 			return nil, err
 		}
 		request.Header.Add("bucket", *bucket)
 		request.Header.Add("key", *key)
-	case getObjectMeta.FullCommand():
-		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *endpoint, "/api/getObjectMeta"), nil)
+	case getMetadata.FullCommand():
+		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *endpoint, "/api/metadata"), nil)
 		if err != nil {
 			return nil, err
 		}
 		request.Header.Add("bucket", *bucket)
 		request.Header.Add("key", *key)
 	default:
-		return nil, errors.New("Unsupported Method")
+		return nil, errors.New("method not implemented")
 	}
 	return request, nil
 }

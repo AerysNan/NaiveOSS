@@ -30,9 +30,9 @@ type MetadataServer struct {
 	pm.MetadataForStorageServer `json:"-"`
 	pm.MetadataForProxyServer   `json:"-"`
 
+	m              sync.RWMutex
 	Root           string `json:"-"`
 	Address        string
-	m              *sync.RWMutex
 	TagMap         map[string]*EntryMeta
 	Bucket         map[string]*Bucket
 	storageTimer   map[string]time.Time
@@ -43,7 +43,7 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 	s := &MetadataServer{
 		Root:           root,
 		Address:        address,
-		m:              new(sync.RWMutex),
+		m:              sync.RWMutex{},
 		TagMap:         make(map[string]*EntryMeta),
 		Bucket:         make(map[string]*Bucket),
 		storageTimer:   make(map[string]time.Time),
@@ -81,7 +81,6 @@ func (s *MetadataServer) recover() {
 func (s *MetadataServer) heartbeatLoop() {
 	ticker := time.NewTicker(HeartbeatTimeout)
 	for {
-		s.m.Lock()
 		for address, t := range s.storageTimer {
 			if t.Add(HeartbeatTimeout).Before(time.Now()) {
 				logrus.WithField("address", address).Warn("Close expired storage connenction")
@@ -89,7 +88,6 @@ func (s *MetadataServer) heartbeatLoop() {
 				delete(s.storageClients, address)
 			}
 		}
-		s.m.Unlock()
 		<-ticker.C
 	}
 }
@@ -182,8 +180,9 @@ func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBuc
 	if ok {
 		return nil, status.Error(codes.AlreadyExists, "bucket already exist")
 	}
-	logrus.WithField("bucket", request.Bucket).Debug("Create new bucket")
+	logrus.WithField("bucket", bucketName).Debug("Create new bucket")
 	bucket := &Bucket{
+		m:          sync.RWMutex{},
 		Name:       bucketName,
 		MemoMap:    make(map[string]*Entry),
 		SSTable:    make([]*Layer, 0),
@@ -194,9 +193,22 @@ func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBuc
 	return &pm.CreateBucketResponse{}, nil
 }
 
-func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*pm.CheckMetaResponse, error) {
+func (s *MetadataServer) DeleteBucket(ctx context.Context, request *pm.DeleteBucketRequest) (*pm.DeleteBucketResponse, error) {
+	bucketName := request.Bucket
 	s.m.Lock()
 	defer s.m.Unlock()
+	_, ok := s.Bucket[bucketName]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "bucket not found")
+	}
+	logrus.WithField("bucket", bucketName).Debug("Delete bucket")
+	delete(s.Bucket, bucketName)
+	return &pm.DeleteBucketResponse{}, nil
+}
+
+func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*pm.CheckMetaResponse, error) {
+	s.m.RLock()
+	defer s.m.RUnlock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "bucket not found")
@@ -225,16 +237,19 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 			Address: address,
 		}, nil
 	}
-	return nil, status.Error(codes.Unavailable, "")
+	return nil, status.Error(codes.Unavailable, "no storage device available")
 }
 
 func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.PutMetaResponse, error) {
-	s.m.Lock()
-	defer s.m.Unlock()
+	s.m.RLock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
+		s.m.RUnlock()
 		return nil, status.Error(codes.NotFound, "bucket not exist")
 	}
+	bucket.m.Lock()
+	defer bucket.m.Unlock()
+	s.m.Unlock()
 	entry := &Entry{
 		Key:        request.Key,
 		Tag:        request.Tag,
@@ -263,11 +278,14 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 
 func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.GetMetaResponse, error) {
 	s.m.RLock()
-	defer s.m.RUnlock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
+		s.m.RUnlock()
 		return nil, status.Error(codes.NotFound, "bucket not exist")
 	}
+	bucket.m.RLock()
+	defer bucket.m.RUnlock()
+	s.m.RUnlock()
 	entry, err := s.searchEntry(bucket, request.Key)
 	if err != nil {
 		return nil, err
@@ -285,12 +303,15 @@ func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest
 }
 
 func (s *MetadataServer) DeleteMeta(ctx context.Context, request *pm.DeleteMetaRequest) (*pm.DeleteMetaResponse, error) {
-	s.m.Lock()
-	defer s.m.Unlock()
+	s.m.RLock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
+		s.m.RUnlock()
 		return nil, status.Error(codes.NotFound, "bucket not exist")
 	}
+	bucket.m.Lock()
+	defer bucket.m.Unlock()
+	s.m.RUnlock()
 	entry, err := s.searchEntry(bucket, request.Key)
 	if err != nil {
 		return nil, err

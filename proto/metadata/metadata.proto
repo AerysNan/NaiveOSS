@@ -11,6 +11,7 @@ message HeartbeatResponse {}
 
 service MetadataForProxy {
   rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse) {}
   rpc CheckMeta(CheckMetaRequest) returns (CheckMetaResponse) {}
   rpc PutMeta(PutMetaRequest) returns (PutMetaResponse) {}
   rpc GetMeta(GetMetaRequest) returns (GetMetaResponse) {}
@@ -20,6 +21,10 @@ service MetadataForProxy {
 message CreateBucketRequest { string bucket = 1; }
 
 message CreateBucketResponse {}
+
+message DeleteBucketRequest { string bucket = 1; }
+
+message DeleteBucketResponse {}
 
 message CheckMetaRequest {
   string bucket = 1;
