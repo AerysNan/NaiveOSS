@@ -61,8 +61,10 @@ type Bucket struct {
 
 func (b *Bucket) createNewLayer() error {
 	entryList := make(EntryList, 0)
+	volumeSet := make(map[int64]struct{})
 	for _, v := range b.MemoMap {
 		entryList = append(entryList, v)
+		volumeSet[v.Volume] = struct{}{}
 	}
 	b.MemoMap = make(map[string]*Entry)
 	sort.Sort(entryList)
@@ -83,13 +85,9 @@ func (b *Bucket) createNewLayer() error {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Write layer file failed")
 		return status.Error(codes.Internal, "write layer file failed")
 	}
-	v := make(map[int64]struct{})
-	for _, entry := range entryList {
-		v[entry.Volume] = struct{}{}
-	}
 	volumes := make([]int64, 0)
-	for k := range v {
-		volumes = append(volumes, k)
+	for volume := range volumeSet {
+		volumes = append(volumes, volume)
 	}
 	layer := &Layer{
 		Name:    name,

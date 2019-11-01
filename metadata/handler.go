@@ -92,6 +92,10 @@ func (s *MetadataServer) heartbeatLoop() {
 	}
 }
 
+func (s *MetadataServer) compactLoop() {
+	
+}
+
 func (s *MetadataServer) dumpLoop() {
 	ticker := time.NewTicker(DumpInterval)
 	for {
