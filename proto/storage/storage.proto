@@ -1,7 +1,28 @@
 syntax = "proto3";
 package ps;
 
-service StorageForMetadata {}
+service StorageForMetadata {
+  rpc State(StateRequest) returns (StateResponse) {}
+  rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
+}
+
+message StateRequest {
+  int64 volume_id = 1;
+}
+
+message StateResponse {
+  int64 size = 1;
+}
+
+message MigrateRequest {
+  int64 volume_id = 1;
+  int64 offset = 2;
+}
+
+message MigrateResponse {
+  int64 volume_id = 1;
+  int64 offset = 2;
+}
 
 service StorageForProxy {
   rpc Get(GetRequest) returns (GetResponse) {}

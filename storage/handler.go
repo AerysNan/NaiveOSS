@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,20 +22,26 @@ import (
 
 var (
 	VolumeMaxSize     = int64(1 << 10)
+	DumpFileName      = "storage.json"
+	DumpInterval      = 5 * time.Second
 	HeartbeatInterval = 5 * time.Second
 )
 
 type Volume struct {
-	volumeId int64
-	size     int64
-	m        *sync.RWMutex
+	m sync.RWMutex
+
+	ID      int64
+	Size    int64
+	Content int64
 }
 
-func NewVolume(id, size int64) *Volume {
+func NewVolume(id int64) *Volume {
 	return &Volume{
-		volumeId: id,
-		size:     size,
-		m:        new(sync.RWMutex),
+		ID:      id,
+		Size:    0,
+		Content: 0,
+
+		m: sync.RWMutex{},
 	}
 }
 
@@ -46,59 +52,43 @@ type StorageServer struct {
 
 	address string
 	root    string
+	m       sync.RWMutex
 
-	currentVolumeId int64
-	volumes         map[int64]*Volume
+	Volumes       map[int64]*Volume
+	CurrentVolume int64
 }
 
 func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient) *StorageServer {
 	storageServer := &StorageServer{
-		metadataClient:  metadataClient,
-		address:         address,
-		root:            root,
-		currentVolumeId: 0,
-		volumes:         make(map[int64]*Volume),
+		metadataClient: metadataClient,
+		address:        address,
+		root:           root,
+		m:              sync.RWMutex{},
 	}
-	storageServer.volumes[0] = NewVolume(0, 0)
 	storageServer.recover()
+	storageServer.addVolume()
+	go storageServer.dumpLoop()
 	go storageServer.heartbeatLoop()
 	return storageServer
 }
 
 func (s *StorageServer) recover() {
-	files, err := ioutil.ReadDir(s.root)
+	file, err := os.Open(path.Join(s.root, DumpFileName))
 	if err != nil {
-		logrus.WithError(err).Error("Open recover directory failed")
+		logrus.WithError(err).Error("Open dump file failed")
 		return
 	}
-	for _, file := range files {
-		if strings.HasSuffix(file.Name(), ".dat") {
-			err := s.recoverSingleFile(file.Name())
-			if err != nil {
-				logrus.WithError(err).Errorf("Recover from file %v failed", file.Name())
-			}
-		}
-	}
-	s.CheckVolumeFull()
-}
-
-func (s *StorageServer) recoverSingleFile(name string) error {
-	file, err := os.Open(path.Join(s.root, name))
-	if err != nil {
-		return err
-	}
 	defer file.Close()
-	info, err := file.Stat()
+	bytes, err := ioutil.ReadAll(file)
 	if err != nil {
-		return err
+		logrus.WithError(err).Error("Read dump file failed")
+		return
 	}
-	var volumeId int64
-	_, _ = fmt.Sscanf(info.Name(), "%v.dat", &volumeId)
-	s.volumes[volumeId] = NewVolume(volumeId, info.Size())
-	if s.currentVolumeId < volumeId {
-		s.currentVolumeId = volumeId
+	err = json.Unmarshal(bytes, s)
+	if err != nil {
+		logrus.WithError(err).Error("Unmarshal JSON failed")
+		return
 	}
-	return nil
 }
 
 func (s *StorageServer) heartbeatLoop() {
@@ -115,16 +105,132 @@ func (s *StorageServer) heartbeatLoop() {
 	}
 }
 
-func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
-	volumeId := request.VolumeId
-	offset := request.Offset
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", volumeId))
-	s.volumes[volumeId].m.RLock()
-	defer s.volumes[volumeId].m.RUnlock()
+func (s *StorageServer) dumpLoop() {
+	ticker := time.NewTicker(DumpInterval)
+	for {
+		bytes, err := json.Marshal(s)
+		if err != nil {
+			logrus.WithError(err).Error("Marshal JSON failed")
+			continue
+		}
+		file, err := os.OpenFile(path.Join(s.root, DumpFileName), os.O_CREATE|os.O_WRONLY, 0766)
+		if err != nil {
+			logrus.WithError(err).Error("Open dump file falied")
+			file.Close()
+			continue
+		}
+		_, err = file.Write(bytes)
+		if err != nil {
+			logrus.WithError(err).Error("Write dump file failed")
+		}
+		file.Close()
+		<-ticker.C
+	}
+}
+
+func (s *StorageServer) State(ctx context.Context, request *ps.StateRequest) (*ps.StateResponse, error) {
+	s.m.RLock()
+	defer s.m.RUnlock()
+	id := request.VolumeId
+	volume, ok := s.Volumes[id]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "no such volume")
+	}
+	return &ps.StateResponse{
+		Size: volume.Content,
+	}, nil
+}
+
+func (s *StorageServer) Migrate(ctx context.Context, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
+	sourceID, sourceOffset := request.VolumeId, request.Offset
+	s.m.RLock()
+	sourceVolume, ok := s.Volumes[sourceID]
+	if !ok {
+		s.m.RUnlock()
+		return nil, status.Error(codes.NotFound, "no such volume")
+	}
+	sourceVolume.m.RLock()
+	s.m.RUnlock()
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", sourceVolume))
 	file, err := os.Open(name)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
-		return nil, status.Error(codes.Internal, "Open data failed")
+		return nil, status.Error(codes.Internal, "open data failed")
+	}
+	bytes := make([]byte, 8)
+	_, err = file.ReadAt(bytes, sourceOffset)
+	if err != nil {
+		logrus.WithError(err).Errorf("Read file %v failed", name)
+		return nil, status.Error(codes.Internal, "read data failed")
+	}
+	size := int64(binary.BigEndian.Uint64(bytes))
+	data := make([]byte, size)
+	_, err = file.ReadAt(data, sourceOffset+8)
+	if err != nil {
+		logrus.WithError(err).Errorf("Read file %v failed", name)
+		return nil, status.Error(codes.Internal, "read data failed")
+	}
+	file.Close()
+	sourceVolume.m.RUnlock()
+
+	s.m.RLock()
+	name = path.Join(s.root, fmt.Sprintf("%d.dat", s.CurrentVolume))
+	currentID := s.CurrentVolume
+	targetVolume, ok := s.Volumes[currentID]
+	if !ok {
+		s.m.RUnlock()
+		return nil, status.Error(codes.NotFound, "no such volume")
+	}
+	targetVolume.m.Lock()
+	defer targetVolume.m.Unlock()
+	s.m.RUnlock()
+	file, err = os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
+	if err != nil {
+		logrus.WithError(err).Errorf("Open file %v failed", name)
+		return nil, status.Error(codes.Internal, "open data failed")
+	}
+	defer file.Close()
+	bytes = make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(size))
+	_, err = file.Write(bytes)
+	if err != nil {
+		logrus.WithError(err).Errorf("Write file %v failed", name)
+		return nil, status.Error(codes.Internal, "write data failed")
+	}
+	_, err = file.Write([]byte(data))
+	if err != nil {
+		logrus.WithError(err).Errorf("Write file %v failed", name)
+		return nil, status.Error(codes.Internal, "write data failed")
+	}
+	response := &ps.MigrateResponse{
+		VolumeId: targetVolume.ID,
+		Offset:   targetVolume.Size,
+	}
+	targetVolume.Size += 8 + size
+	targetVolume.Content += size
+	if targetVolume.Size >= VolumeMaxSize {
+		s.addVolume()
+	}
+	return response, nil
+}
+
+func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
+	id := request.VolumeId
+	offset := request.Offset
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", id))
+	s.m.RLock()
+	volume, ok := s.Volumes[id]
+	if !ok {
+		s.m.RUnlock()
+		return nil, status.Error(codes.NotFound, "no such volume")
+	}
+	volume.m.RLock()
+	defer volume.m.RUnlock()
+	s.m.RUnlock()
+	file, err := os.Open(name)
+	if err != nil {
+		logrus.WithError(err).Errorf("Open file %v failed", name)
+		return nil, status.Error(codes.Internal, "open data failed")
 	}
 	defer file.Close()
 	bytes := make([]byte, 8)
@@ -151,10 +257,17 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 		return nil, status.Error(codes.Unauthenticated, "data operation not authenticated")
 	}
 	size := int64(len(data))
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.currentVolumeId))
-	currentId := s.currentVolumeId
-	s.volumes[currentId].m.Lock()
-	defer s.volumes[currentId].m.Unlock()
+	s.m.RLock()
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.CurrentVolume))
+	currentID := s.CurrentVolume
+	volume, ok := s.Volumes[currentID]
+	if !ok {
+		s.m.RUnlock()
+		return nil, status.Error(codes.NotFound, "no such volume")
+	}
+	volume.m.Lock()
+	defer volume.m.Unlock()
+	s.m.RUnlock()
 	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
@@ -174,17 +287,20 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 		return nil, status.Error(codes.Internal, "write data failed")
 	}
 	response := &ps.PutResponse{
-		VolumeId: s.volumes[s.currentVolumeId].volumeId,
-		Offset:   s.volumes[s.currentVolumeId].size,
+		VolumeId: volume.ID,
+		Offset:   volume.Size,
 	}
-	s.volumes[s.currentVolumeId].size += 8 + size
-	s.CheckVolumeFull()
+	volume.Size += 8 + size
+	volume.Content += size
+	if volume.Size >= VolumeMaxSize {
+		s.addVolume()
+	}
 	return response, nil
 }
 
-func (s *StorageServer) CheckVolumeFull() {
-	if s.volumes[s.currentVolumeId].size >= VolumeMaxSize {
-		s.currentVolumeId++
-		s.volumes[s.currentVolumeId] = NewVolume(s.currentVolumeId, 0)
-	}
+func (s *StorageServer) addVolume() {
+	s.m.Lock()
+	defer s.m.Unlock()
+	s.CurrentVolume++
+	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume)
 }
