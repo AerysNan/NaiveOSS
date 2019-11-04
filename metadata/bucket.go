@@ -59,15 +59,27 @@ type Bucket struct {
 	CreateTime int64             // create timestamp
 }
 
-func (b *Bucket) createNewLayer() error {
+func (b *Bucket) rotate() ([]int64, error) {
 	entryList := make(EntryList, 0)
 	volumeSet := make(map[int64]struct{})
 	for _, v := range b.MemoMap {
 		entryList = append(entryList, v)
 		volumeSet[v.Volume] = struct{}{}
 	}
+	volumes := make([]int64, 0)
+	for volume := range volumeSet {
+		volumes = append(volumes, volume)
+	}
 	b.MemoMap = make(map[string]*Entry)
 	sort.Sort(entryList)
+	err := b.writeLayer(entryList, volumes)
+	if err != nil {
+		return nil, err
+	}
+	return volumes, nil
+}
+
+func (b *Bucket) writeLayer(entryList []*Entry, volumes []int64) error {
 	bytes, err := json.Marshal(entryList)
 	if err != nil {
 		logrus.WithError(err).Warn("Marshal JSON failed")
@@ -84,10 +96,6 @@ func (b *Bucket) createNewLayer() error {
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Write layer file failed")
 		return status.Error(codes.Internal, "write layer file failed")
-	}
-	volumes := make([]int64, 0)
-	for volume := range volumeSet {
-		volumes = append(volumes, volume)
 	}
 	layer := &Layer{
 		Name:    name,

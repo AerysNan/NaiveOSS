@@ -8,7 +8,7 @@ import (
 )
 
 func checkParameter(r *http.Request, parameters []string) (map[string]string, error) {
-	result := make(map[string]string, 0)
+	result := make(map[string]string)
 	for _, p := range parameters {
 		value := r.Header.Get(p)
 		if len(value) == 0 {

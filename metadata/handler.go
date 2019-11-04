@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
@@ -24,6 +25,8 @@ var (
 	DumpFileName       = "metadata.json"
 	DumpInterval       = 5 * time.Second
 	HeartbeatTimeout   = 10 * time.Second
+	CompactTimeout     = time.Minute
+	TrashRateThreshold = 0.4
 )
 
 type MetadataServer struct {
@@ -31,6 +34,7 @@ type MetadataServer struct {
 	pm.MetadataForProxyServer   `json:"-"`
 
 	m              sync.RWMutex
+	ref            map[int64]int64
 	Root           string `json:"-"`
 	Address        string
 	TagMap         map[string]*EntryMeta
@@ -41,9 +45,10 @@ type MetadataServer struct {
 
 func NewMetadataServer(address string, root string) *MetadataServer {
 	s := &MetadataServer{
+		m:              sync.RWMutex{},
+		ref:            make(map[int64]int64),
 		Root:           root,
 		Address:        address,
-		m:              sync.RWMutex{},
 		TagMap:         make(map[string]*EntryMeta),
 		Bucket:         make(map[string]*Bucket),
 		storageTimer:   make(map[string]time.Time),
@@ -51,6 +56,7 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 	}
 	s.recover()
 	go s.dumpLoop()
+	go s.compactLoop()
 	go s.heartbeatLoop()
 	return s
 }
@@ -76,6 +82,99 @@ func (s *MetadataServer) recover() {
 	if err != nil {
 		logrus.WithError(err).Error("Unmarshal JSON failed")
 	}
+	for _, bucket := range s.Bucket {
+		bucket.m = sync.RWMutex{}
+	}
+}
+
+func (s *MetadataServer) compactLoop() {
+	ticker := time.NewTicker(CompactTimeout)
+	for {
+		wg := sync.WaitGroup{}
+		s.m.RLock()
+		wg.Add(len(s.Bucket))
+		for _, bucket := range s.Bucket {
+			go func(b *Bucket) {
+				defer wg.Done()
+				entries, err := mergeLayers(b.SSTable)
+				if err != nil {
+					logrus.WithError(err).Error("Merge layers failed")
+					return
+				}
+				v2Size := make(map[string]int64)
+				for _, entry := range entries {
+					key := fmt.Sprintf("%v-%v", entry.Address, entry.Volume)
+					v2Size[key] += entry.Size
+				}
+				layers := [][]*Entry{entries}
+				for key, size := range v2Size {
+					var address string
+					var volume int64
+					fmt.Sscanf(key, "%v-%v", &address, &volume)
+					state, err := s.storageClients[address].State(context.Background(), &ps.StateRequest{
+						VolumeId: volume,
+					})
+					if err != nil {
+						logrus.WithError(err).Error("Get volume state failed")
+						return
+					}
+					trashRate := 1.0 - float64(size)/float64(state.Size)
+					if trashRate > TrashRateThreshold {
+						newEntries, err := s.compress(address, volume, entries)
+						if err == nil {
+							logrus.Debug("Compress volume succeeded")
+							layers = append(layers, newEntries)
+						} else {
+							logrus.WithError(err).Error("Compress volume failed")
+							return
+						}
+					}
+				}
+				set := make(map[int64]struct{})
+				entries = mergeEntryMatrix(layers)
+				for _, entry := range entries {
+					set[entry.Volume] = struct{}{}
+				}
+
+				volumeIDs := make([]int64, 0)
+				for volumeID := range set {
+					volumeIDs = append(volumeIDs, volumeID)
+				}
+				b.SSTable = []*Layer{
+					&Layer{
+						Name:    "haha",
+						Volumes: volumeIDs,
+					},
+				}
+			}(bucket)
+		}
+		s.m.RUnlock()
+		wg.Wait()
+		<-ticker.C
+	}
+}
+
+func (s *MetadataServer) compress(address string, volumeID int64, entries []*Entry) ([]*Entry, error) {
+	logrus.WithFields(logrus.Fields{
+		"address":  address,
+		"volumeID": volumeID,
+	}).Debug("Begin to compress volume")
+	resultEntries := make([]*Entry, 0)
+	size := int64(0)
+	for _, entry := range entries {
+		if entry.Volume == volumeID && !entry.Delete {
+			resultEntries = append(resultEntries, entry)
+			size += entry.Size
+		}
+	}
+	if size == 0 {
+		logrus.WithFields(logrus.Fields{
+			"address":  address,
+			"volumeID": volumeID,
+		}).Debug("Remove empty volume")
+	}
+	// TODO
+	return nil, nil
 }
 
 func (s *MetadataServer) heartbeatLoop() {
@@ -92,14 +191,9 @@ func (s *MetadataServer) heartbeatLoop() {
 	}
 }
 
-func (s *MetadataServer) compactLoop() {
-	
-}
-
 func (s *MetadataServer) dumpLoop() {
 	ticker := time.NewTicker(DumpInterval)
 	for {
-		<-ticker.C
 		bytes, err := json.Marshal(s)
 		if err != nil {
 			logrus.WithError(err).Error("Marshal JSON failed")
@@ -114,7 +208,8 @@ func (s *MetadataServer) dumpLoop() {
 		if err != nil {
 			logrus.WithError(err).Error("Write dump file failed")
 		}
-		_ = file.Close()
+		file.Close()
+		<-ticker.C
 	}
 }
 
@@ -125,22 +220,10 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 	}
 	for i := len(bucket.SSTable) - 1; i >= 0; i-- {
 		layer := bucket.SSTable[i]
-		file, err := os.Open(layer.Name)
+		entryList, err := readLayer(layer.Name)
 		if err != nil {
-			logrus.WithError(err).Errorf("Open file %v failed", layer.Name)
-			return nil, status.Error(codes.Internal, "open index failed")
-		}
-		defer file.Close()
-		bytes, err := ioutil.ReadAll(file)
-		if err != nil {
-			logrus.WithError(err).Errorf("Read file %v failed", layer.Name)
-			return nil, status.Error(codes.Internal, "read index failed")
-		}
-		entryList := make([]*Entry, 0)
-		err = json.Unmarshal(bytes, &entryList)
-		if err != nil {
-			logrus.WithError(err).Errorf("Unmarshal JSON from file %v failed", layer.Name)
-			return nil, status.Error(codes.DataLoss, "index data corrupted")
+			logrus.Errorf("Get layer %v content failed", layer.Name)
+			return nil, err
 		}
 		l, h := 0, len(entryList)-1
 		for l <= h {
@@ -264,9 +347,12 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 		CreateTime: time.Now().Unix(),
 	}
 	if len(bucket.MemoMap) > LayerKeyThreshold || bucket.MemoSize > LayerSizeThreshold {
-		err := bucket.createNewLayer()
+		volumes, err := bucket.rotate()
 		if err != nil {
 			return nil, err
+		}
+		for _, v := range volumes {
+			s.ref[v]++
 		}
 	}
 	bucket.MemoMap[request.Key] = entry

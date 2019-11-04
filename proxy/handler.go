@@ -83,7 +83,7 @@ func (s *ProxyServer) putObject(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	tag := fmt.Sprintf("%x", sha256.Sum256(body))
 	if tag != rtag {
-		writeError(w, status.Error(codes.Unknown, "Data transmission error"))
+		writeError(w, status.Error(codes.Unknown, "data transmission error"))
 		return
 	}
 	response, err := s.metadataClient.CheckMeta(ctx, &pm.CheckMetaRequest{
@@ -111,7 +111,7 @@ func (s *ProxyServer) putObject(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(s.storageClients) >= maxStorageConnection {
 			for k := range s.storageClients {
-				_ = s.storageClients[k].Close()
+				s.storageClients[k].Close()
 				delete(s.storageClients, k)
 				s.storageClients[address] = connection
 				break
@@ -173,7 +173,7 @@ func (s *ProxyServer) getObject(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(s.storageClients) >= maxStorageConnection {
 			for k := range s.storageClients {
-				_ = s.storageClients[k].Close()
+				s.storageClients[k].Close()
 				delete(s.storageClients, k)
 				s.storageClients[address] = connection
 				break
