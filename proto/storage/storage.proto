@@ -4,15 +4,15 @@ package ps;
 service StorageForMetadata {
   rpc State(StateRequest) returns (StateResponse) {}
   rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
+  rpc Rotate(RotateRequest) returns (RotateResponse) {}
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse) {}
 }
 
 message StateRequest {
   int64 volume_id = 1;
 }
 
-message StateResponse {
-  int64 size = 1;
-}
+message StateResponse { int64 size = 1; }
 
 message MigrateRequest {
   int64 volume_id = 1;
@@ -23,6 +23,14 @@ message MigrateResponse {
   int64 volume_id = 1;
   int64 offset = 2;
 }
+
+message RotateRequest {}
+
+message RotateResponse {}
+
+message DeleteVolumeRequest { int64 volume_id = 1; }
+
+message DeleteVolumeResponse {}
 
 service StorageForProxy {
   rpc Get(GetRequest) returns (GetResponse) {}

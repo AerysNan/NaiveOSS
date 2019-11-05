@@ -1,3 +1,5 @@
 *.pb.go
+*.obj
 /build
 /data
+/config

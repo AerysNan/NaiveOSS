@@ -19,19 +19,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var (
-	LayerKeyThreshold  = 10
-	DumpFileName       = "metadata.json"
-	DumpInterval       = 5 * time.Second
-	HeartbeatTimeout   = 10 * time.Second
-	CompactTimeout     = time.Minute
-	TrashRateThreshold = 0.4
-)
+type Config struct {
+	DumpFileName       string
+	LayerKeyThreshold  int
+	TrashRateThreshold float64
+	DumpTimeout        time.Duration
+	HeartbeatTimeout   time.Duration
+	CompactTimeout     time.Duration
+	GCTimeout          time.Duration
+}
 
 type MetadataServer struct {
 	pm.MetadataForStorageServer `json:"-"`
 	pm.MetadataForProxyServer   `json:"-"`
 
+	config         *Config
 	m              sync.RWMutex
 	ref            map[string]int64
 	Root           string `json:"-"`
@@ -42,10 +44,11 @@ type MetadataServer struct {
 	storageClients map[string]ps.StorageForMetadataClient
 }
 
-func NewMetadataServer(address string, root string) *MetadataServer {
+func NewMetadataServer(address string, root string, config *Config) *MetadataServer {
 	s := &MetadataServer{
 		m:              sync.RWMutex{},
 		ref:            make(map[string]int64),
+		config:         config,
 		Root:           root,
 		Address:        address,
 		TagMap:         make(map[string]*EntryMeta),
@@ -54,6 +57,7 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 		storageClients: make(map[string]ps.StorageForMetadataClient),
 	}
 	s.recover()
+	go s.gcLoop()
 	go s.dumpLoop()
 	go s.compactLoop()
 	go s.heartbeatLoop()
@@ -61,7 +65,7 @@ func NewMetadataServer(address string, root string) *MetadataServer {
 }
 
 func (s *MetadataServer) recover() {
-	filePath := path.Join(s.Root, DumpFileName)
+	filePath := path.Join(s.Root, s.config.DumpFileName)
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return
@@ -93,7 +97,7 @@ func (s *MetadataServer) recover() {
 }
 
 func (s *MetadataServer) compactLoop() {
-	ticker := time.NewTicker(CompactTimeout)
+	ticker := time.NewTicker(s.config.CompactTimeout)
 	for {
 		wg := sync.WaitGroup{}
 		s.m.RLock()
@@ -106,31 +110,38 @@ func (s *MetadataServer) compactLoop() {
 				if len(b.SSTable) <= 1 {
 					return
 				}
-				entries, err := mergeLayers(b.SSTable)
+				logrus.WithField("bucket", b.Name).Debug("Perform compact")
+				entries, err := b.mergeLayers(b.SSTable)
 				if err != nil {
 					logrus.WithError(err).Error("Merge layers failed")
 					return
 				}
 				v2Size := make(map[string]int64)
 				for _, entry := range entries {
-					key := fmt.Sprintf("%v-%v", entry.Address, entry.Volume)
+					key := fmt.Sprintf("%v-%v", entry.Volume, entry.Address)
 					v2Size[key] += entry.Size
 				}
 				layers := [][]*Entry{entries}
 				for key, size := range v2Size {
 					var address string
-					var volume int64
-					fmt.Sscanf(key, "%v-%v", &address, &volume)
-					state, err := s.storageClients[address].State(context.Background(), &ps.StateRequest{
-						VolumeId: volume,
+					var volumeID int64
+					fmt.Sscanf(key, "%v-%v", &volumeID, &address)
+					client, ok := s.storageClients[address]
+					if !ok {
+						logrus.WithField("address", address).Error("Storage client not found")
+						return
+					}
+					state, err := client.State(context.Background(), &ps.StateRequest{
+						VolumeId: volumeID,
 					})
 					if err != nil {
 						logrus.WithError(err).Error("Get volume state failed")
 						return
 					}
 					trashRate := 1.0 - float64(size)/float64(state.Size)
-					if trashRate > TrashRateThreshold {
-						newEntries, err := s.compress(address, volume, entries)
+					if trashRate > s.config.TrashRateThreshold {
+						logrus.Debugf("Trashrate threshold exceeded, content %v, actual %v", size, state.Size)
+						newEntries, err := s.compress(address, volumeID, entries)
 						if err == nil {
 							logrus.Debug("Compress volume succeeded")
 							layers = append(layers, newEntries)
@@ -143,7 +154,7 @@ func (s *MetadataServer) compactLoop() {
 				entries = mergeEntryMatrix(layers)
 				set := make(map[string]struct{})
 				for _, entry := range entries {
-					set[fmt.Sprintf("%v-%v", entry.Address, entry.Volume)] = struct{}{}
+					set[fmt.Sprintf("%v-%v", entry.Volume, entry.Address)] = struct{}{}
 				}
 				volumeIDs := make([]string, 0)
 				for volumeID := range set {
@@ -155,18 +166,19 @@ func (s *MetadataServer) compactLoop() {
 					Begin:   b.SSTable[0].Begin,
 					End:     b.SSTable[len(b.SSTable)-1].End,
 				}
-				err = b.writeLayer(entries, volumeIDs)
-				if err != nil {
-					logrus.WithError(err).Error("Write layer failed")
-					return
-				}
 				for _, layer := range b.SSTable {
+					b.deleteLayer(layer.Name)
 					for _, volume := range layer.Volumes {
 						logrus.WithField("action", "delete").Debugf("Reference decrease on volume %v", volume)
 						s.ref[volume]--
 					}
 				}
-				b.SSTable = []*Layer{compactedLayer}
+				b.SSTable = []*Layer{}
+				err = b.writeLayer(entries, volumeIDs, compactedLayer.Begin, compactedLayer.End)
+				if err != nil {
+					logrus.WithError(err).Error("Write layer failed")
+					return
+				}
 			}(bucket)
 		}
 		s.m.RUnlock()
@@ -193,10 +205,15 @@ func (s *MetadataServer) compress(address string, volumeID int64, entries []*Ent
 			"address":  address,
 			"volumeID": volumeID,
 		}).Debug("Remove empty volume")
+		return []*Entry{}, nil
 	}
 	client, ok := s.storageClients[address]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "no such storage client")
+	}
+	_, err := client.Rotate(context.Background(), &ps.RotateRequest{})
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "create new volume failed")
 	}
 	for _, entry := range resultEntries {
 		response, err := client.Migrate(context.Background(), &ps.MigrateRequest{
@@ -213,10 +230,10 @@ func (s *MetadataServer) compress(address string, volumeID int64, entries []*Ent
 }
 
 func (s *MetadataServer) heartbeatLoop() {
-	ticker := time.NewTicker(HeartbeatTimeout)
+	ticker := time.NewTicker(s.config.HeartbeatTimeout)
 	for {
 		for address, t := range s.storageTimer {
-			if t.Add(HeartbeatTimeout).Before(time.Now()) {
+			if t.Add(s.config.HeartbeatTimeout).Before(time.Now()) {
 				logrus.WithField("address", address).Warn("Close expired storage connenction")
 				delete(s.storageTimer, address)
 				delete(s.storageClients, address)
@@ -227,15 +244,17 @@ func (s *MetadataServer) heartbeatLoop() {
 }
 
 func (s *MetadataServer) dumpLoop() {
-	ticker := time.NewTicker(DumpInterval)
+	ticker := time.NewTicker(s.config.DumpTimeout)
 	for {
 		func() {
+			s.m.RLock()
 			bytes, err := json.Marshal(s)
+			s.m.RUnlock()
 			if err != nil {
 				logrus.WithError(err).Error("Marshal JSON failed")
 				return
 			}
-			file, err := os.OpenFile(path.Join(s.Root, DumpFileName), os.O_CREATE|os.O_WRONLY, 0766)
+			file, err := os.OpenFile(path.Join(s.Root, s.config.DumpFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0766)
 			if err != nil {
 				logrus.WithError(err).Error("Open dump file falied")
 				return
@@ -250,6 +269,49 @@ func (s *MetadataServer) dumpLoop() {
 	}
 }
 
+func (s *MetadataServer) gcLoop() {
+	ticker := time.NewTicker(s.config.GCTimeout)
+	for {
+		for volume, ref := range s.ref {
+			if ref > 0 {
+				continue
+			}
+			var address string
+			var volumeID int64
+			fmt.Sscanf(volume, "%v-%v", &volumeID, &address)
+			found := func() bool {
+				for _, bucket := range s.Bucket {
+					for _, entry := range bucket.MemoMap {
+						if entry.Address == address && entry.Volume == volumeID {
+							return true
+						}
+					}
+				}
+				return false
+			}()
+			if found {
+				continue
+			}
+			delete(s.ref, volume)
+			logrus.WithField("volume", volume).Debug("Delete zero referenced volume")
+			client, ok := s.storageClients[address]
+			if !ok {
+				logrus.WithField("address", address).Error("Storage client not found")
+				continue
+			}
+			_, err := client.DeleteVolume(context.Background(), &ps.DeleteVolumeRequest{
+				VolumeId: volumeID,
+			})
+			if err != nil {
+				logrus.WithError(err).Error("GC useless volume failed")
+			} else {
+				logrus.Debug("GC useless volume succeeded")
+			}
+		}
+		<-ticker.C
+	}
+}
+
 func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error) {
 	entry, ok := bucket.MemoMap[key]
 	if ok {
@@ -257,7 +319,7 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 	}
 	for i := len(bucket.SSTable) - 1; i >= 0; i-- {
 		layer := bucket.SSTable[i]
-		entryList, err := readLayer(layer.Name)
+		entryList, err := bucket.readLayer(layer.Name)
 		if err != nil {
 			logrus.Errorf("Get layer %v content failed", layer.Name)
 			return nil, err
@@ -307,6 +369,7 @@ func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBuc
 	logrus.WithField("bucket", bucketName).Debug("Create new bucket")
 	bucket := &Bucket{
 		m:          sync.RWMutex{},
+		root:       s.Root,
 		Name:       bucketName,
 		MemoMap:    make(map[string]*Entry),
 		SSTable:    make([]*Layer, 0),
@@ -339,6 +402,7 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 	}
 	meta, ok := s.TagMap[request.Tag]
 	if ok {
+		bucket.m.Lock()
 		entry := &Entry{
 			Key:        request.Key,
 			Tag:        request.Tag,
@@ -350,6 +414,17 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 			Delete:     false,
 		}
 		bucket.MemoMap[request.Key] = entry
+		if len(bucket.MemoMap) >= s.config.LayerKeyThreshold {
+			volumes, err := bucket.rotate()
+			if err != nil {
+				return nil, err
+			}
+			for _, v := range volumes {
+				logrus.WithField("action", "put").Debugf("Refernece increase on volume %v", v)
+				s.ref[v]++
+			}
+		}
+		bucket.m.Unlock()
 		return &pm.CheckMetaResponse{
 			Existed: true,
 			Address: "",
@@ -383,7 +458,16 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 		Size:       request.Size,
 		CreateTime: time.Now().Unix(),
 	}
-	if len(bucket.MemoMap) > LayerKeyThreshold {
+
+	bucket.MemoMap[request.Key] = entry
+	bucket.MemoSize += request.Size
+	s.TagMap[request.Tag] = &EntryMeta{
+		Address: request.Address,
+		Volume:  request.VolumeId,
+		Offset:  request.Offset,
+		Size:    request.Size,
+	}
+	if len(bucket.MemoMap) >= s.config.LayerKeyThreshold {
 		volumes, err := bucket.rotate()
 		if err != nil {
 			return nil, err
@@ -392,14 +476,6 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 			logrus.WithField("action", "put").Debugf("Refernece increase on volume %v", v)
 			s.ref[v]++
 		}
-	}
-	bucket.MemoMap[request.Key] = entry
-	bucket.MemoSize += request.Size
-	s.TagMap[request.Tag] = &EntryMeta{
-		Address: request.Address,
-		Volume:  request.VolumeId,
-		Offset:  request.Offset,
-		Size:    request.Size,
 	}
 	return &pm.PutMetaResponse{}, nil
 }

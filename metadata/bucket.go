@@ -3,7 +3,9 @@ package metadata
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"path"
 	"sort"
 	"sync"
 
@@ -53,6 +55,7 @@ type Layer struct {
 
 type Bucket struct {
 	m          sync.RWMutex
+	root       string
 	Name       string            // bucket name
 	MemoMap    map[string]*Entry // key -> entry
 	SSTable    []*Layer          // read only layer list
@@ -65,7 +68,7 @@ func (b *Bucket) rotate() ([]string, error) {
 	volumeSet := make(map[string]struct{})
 	for _, v := range b.MemoMap {
 		entryList = append(entryList, v)
-		volumeSet[fmt.Sprintf("%v-%v", v.Address, v.Volume)] = struct{}{}
+		volumeSet[fmt.Sprintf("%v-%v", v.Volume, v.Address)] = struct{}{}
 	}
 	volumes := make([]string, 0)
 	for volume := range volumeSet {
@@ -73,21 +76,28 @@ func (b *Bucket) rotate() ([]string, error) {
 	}
 	b.MemoMap = make(map[string]*Entry)
 	sort.Sort(entryList)
-	err := b.writeLayer(entryList, volumes)
+	err := b.writeLayer(entryList, volumes, len(b.SSTable), len(b.SSTable))
 	if err != nil {
 		return nil, err
 	}
 	return volumes, nil
 }
 
-func (b *Bucket) writeLayer(entryList []*Entry, volumes []string) error {
+func (b *Bucket) deleteLayer(name string) {
+	err := os.Remove(path.Join(b.root, name))
+	if err != nil {
+		logrus.WithError(err).Warn("Delete layer failed")
+	}
+}
+
+func (b *Bucket) writeLayer(entryList []*Entry, volumes []string, begin int, end int) error {
 	bytes, err := json.Marshal(entryList)
 	if err != nil {
 		logrus.WithError(err).Warn("Marshal JSON failed")
 		return status.Error(codes.Internal, "marshal JSON failed")
 	}
-	name := fmt.Sprintf("%v-%v-%v", b.Name, len(b.SSTable), len(b.SSTable))
-	file, err := os.Create(name)
+	name := fmt.Sprintf("%v-%v-%v", b.Name, begin, end)
+	file, err := os.Create(path.Join(b.root, name))
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Create layer file failed")
 		return status.Error(codes.Internal, "create layer file failed")
@@ -101,10 +111,45 @@ func (b *Bucket) writeLayer(entryList []*Entry, volumes []string) error {
 	layer := &Layer{
 		Name:    name,
 		Volumes: volumes,
-		Begin:   len(b.SSTable),
-		End:     len(b.SSTable),
+		Begin:   begin,
+		End:     end,
 	}
 	logrus.Debugf("Add new layer %v", name)
 	b.SSTable = append(b.SSTable, layer)
 	return nil
+}
+
+func (b *Bucket) readLayer(name string) ([]*Entry, error) {
+	file, err := os.Open(path.Join(b.root, name))
+	if err != nil {
+		logrus.Warnf("Open file %v failed", name)
+		return nil, err
+	}
+	defer file.Close()
+	bytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		logrus.Warnf("Read file %v failed", name)
+		return nil, err
+	}
+	result := make([]*Entry, 0)
+	err = json.Unmarshal(bytes, &result)
+	if err != nil {
+		logrus.Warnf("Unmarshal JSON from file %v faield", name)
+		return nil, err
+	}
+	return result, nil
+}
+
+func (b *Bucket) mergeLayers(layers []*Layer) ([]*Entry, error) {
+	logrus.Debugf("Start merging %v layers", len(layers))
+	entryMatrix := make([][]*Entry, 0)
+	for _, layer := range layers {
+		entries, err := b.readLayer(layer.Name)
+		if err != nil {
+			return nil, err
+		}
+		entryMatrix = append(entryMatrix, entries)
+	}
+
+	return mergeEntryMatrix(entryMatrix), nil
 }

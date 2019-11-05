@@ -1,4 +1,7 @@
-all: proto
+n = 10
+m = 1024
+
+all: clean protobuf binary object
 
 protobuf:
 	cd proto/metadata && protoc --go_out=plugins=grpc:. *.proto
@@ -11,6 +14,10 @@ binary:
 	cd cmd/client && go build -o ../../build/client
 
 clean:
-	cd proto/metadata && rm *.pb.go
-	cd proto/storage && rm *.pb.go
-	cd data && rm *
+	rm -f *.obj
+	cd proto/metadata && rm -f *.pb.go
+	cd proto/storage && rm -f *.pb.go
+	cd data && rm -f *
+
+object:
+	python gen.py $(n) $(m)
