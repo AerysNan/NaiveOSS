@@ -64,6 +64,9 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 		address:        address,
 		root:           root,
 		m:              sync.RWMutex{},
+
+		Volumes:       make(map[int64]*Volume),
+		CurrentVolume: 0,
 	}
 	storageServer.recover()
 	storageServer.addVolume()
@@ -73,7 +76,12 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 }
 
 func (s *StorageServer) recover() {
-	file, err := os.Open(path.Join(s.root, DumpFileName))
+	filePath := path.Join(s.root, DumpFileName)
+	_, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		return
+	}
+	file, err := os.Open(filePath)
 	if err != nil {
 		logrus.WithError(err).Error("Open dump file failed")
 		return

@@ -18,7 +18,7 @@ var (
 	createBucket = client.Command("create-bucket", "Create a bucket")
 	deleteBucket = client.Command("delete-bucket", "Delete a bucket")
 	getObject    = client.Command("get-object", "Get object from oss")
-	putObject    = client.Command("put-obecjt", "Put object to oss")
+	putObject    = client.Command("put-object", "Put object to oss")
 	deleteObject = client.Command("delete-object", "Delete object in oss")
 	getMetadata  = client.Command("get-metadata", "Get object meta from oss")
 	endpoint     = client.Flag("a", "address of object storage service").Default("http://127.0.0.1:8082").String()

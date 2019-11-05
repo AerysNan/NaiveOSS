@@ -96,6 +96,9 @@ func (s *MetadataServer) compactLoop() {
 		for _, bucket := range s.Bucket {
 			go func(b *Bucket) {
 				defer wg.Done()
+				if len(b.SSTable) <= 1 {
+					return
+				}
 				entries, err := mergeLayers(b.SSTable)
 				if err != nil {
 					logrus.WithError(err).Error("Merge layers failed")
@@ -194,21 +197,23 @@ func (s *MetadataServer) heartbeatLoop() {
 func (s *MetadataServer) dumpLoop() {
 	ticker := time.NewTicker(DumpInterval)
 	for {
-		bytes, err := json.Marshal(s)
-		if err != nil {
-			logrus.WithError(err).Error("Marshal JSON failed")
-			continue
-		}
-		file, err := os.OpenFile(path.Join(s.Root, DumpFileName), os.O_CREATE|os.O_WRONLY, 0766)
-		if err != nil {
-			logrus.WithError(err).Error("Open dump file falied")
-			continue
-		}
-		_, err = file.Write(bytes)
-		if err != nil {
-			logrus.WithError(err).Error("Write dump file failed")
-		}
-		file.Close()
+		func() {
+			bytes, err := json.Marshal(s)
+			if err != nil {
+				logrus.WithError(err).Error("Marshal JSON failed")
+				return
+			}
+			file, err := os.OpenFile(path.Join(s.Root, DumpFileName), os.O_CREATE|os.O_WRONLY, 0766)
+			if err != nil {
+				logrus.WithError(err).Error("Open dump file falied")
+				return
+			}
+			defer file.Close()
+			_, err = file.Write(bytes)
+			if err != nil {
+				logrus.WithError(err).Error("Write dump file failed")
+			}
+		}()
 		<-ticker.C
 	}
 }
@@ -336,7 +341,7 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 	}
 	bucket.m.Lock()
 	defer bucket.m.Unlock()
-	s.m.Unlock()
+	s.m.RUnlock()
 	entry := &Entry{
 		Key:        request.Key,
 		Tag:        request.Tag,
