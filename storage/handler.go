@@ -309,6 +309,7 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 func (s *StorageServer) addVolume() {
 	s.m.Lock()
 	defer s.m.Unlock()
+	logrus.Debugf("volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
 	s.CurrentVolume++
 	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume)
 }

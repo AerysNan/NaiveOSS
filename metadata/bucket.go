@@ -46,8 +46,9 @@ type EntryMeta struct {
 
 type Layer struct {
 	Name    string
-	Size    int64
-	Volumes []int64
+	Volumes []string
+	Begin   int
+	End     int
 }
 
 type Bucket struct {
@@ -59,14 +60,14 @@ type Bucket struct {
 	CreateTime int64             // create timestamp
 }
 
-func (b *Bucket) rotate() ([]int64, error) {
+func (b *Bucket) rotate() ([]string, error) {
 	entryList := make(EntryList, 0)
-	volumeSet := make(map[int64]struct{})
+	volumeSet := make(map[string]struct{})
 	for _, v := range b.MemoMap {
 		entryList = append(entryList, v)
-		volumeSet[v.Volume] = struct{}{}
+		volumeSet[fmt.Sprintf("%v-%v", v.Address, v.Volume)] = struct{}{}
 	}
-	volumes := make([]int64, 0)
+	volumes := make([]string, 0)
 	for volume := range volumeSet {
 		volumes = append(volumes, volume)
 	}
@@ -79,13 +80,13 @@ func (b *Bucket) rotate() ([]int64, error) {
 	return volumes, nil
 }
 
-func (b *Bucket) writeLayer(entryList []*Entry, volumes []int64) error {
+func (b *Bucket) writeLayer(entryList []*Entry, volumes []string) error {
 	bytes, err := json.Marshal(entryList)
 	if err != nil {
 		logrus.WithError(err).Warn("Marshal JSON failed")
 		return status.Error(codes.Internal, "marshal JSON failed")
 	}
-	name := fmt.Sprintf("%v-%v", b.Name, len(b.SSTable))
+	name := fmt.Sprintf("%v-%v-%v", b.Name, len(b.SSTable), len(b.SSTable))
 	file, err := os.Create(name)
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Create layer file failed")
@@ -99,9 +100,11 @@ func (b *Bucket) writeLayer(entryList []*Entry, volumes []int64) error {
 	}
 	layer := &Layer{
 		Name:    name,
-		Size:    int64(len(bytes)),
 		Volumes: volumes,
+		Begin:   len(b.SSTable),
+		End:     len(b.SSTable),
 	}
+	logrus.Debugf("Add new layer %v", name)
 	b.SSTable = append(b.SSTable, layer)
 	return nil
 }
