@@ -20,12 +20,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var (
-	VolumeMaxSize     = int64(1 << 10)
-	DumpFileName      = "storage.json"
-	DumpInterval      = 5 * time.Second
-	HeartbeatInterval = 5 * time.Second
-)
+type Config struct {
+	VolumeMaxSize    int64
+	DumpFileName     string
+	DumpTimeout      time.Duration
+	HeartbeatTimeout time.Duration
+}
 
 type Volume struct {
 	m sync.RWMutex
@@ -52,16 +52,18 @@ type StorageServer struct {
 
 	address string
 	root    string
+	config  *Config
 	m       sync.RWMutex
 
 	Volumes       map[int64]*Volume
 	CurrentVolume int64
 }
 
-func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient) *StorageServer {
+func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient, config *Config) *StorageServer {
 	storageServer := &StorageServer{
 		metadataClient: metadataClient,
 		address:        address,
+		config:         config,
 		root:           root,
 		m:              sync.RWMutex{},
 
@@ -76,7 +78,7 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 }
 
 func (s *StorageServer) recover() {
-	filePath := path.Join(s.root, DumpFileName)
+	filePath := path.Join(s.root, s.config.DumpFileName)
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return
@@ -100,7 +102,7 @@ func (s *StorageServer) recover() {
 }
 
 func (s *StorageServer) heartbeatLoop() {
-	ticker := time.NewTicker(HeartbeatInterval)
+	ticker := time.NewTicker(s.config.HeartbeatTimeout)
 	for {
 		ctx := context.Background()
 		_, err := s.metadataClient.Heartbeat(ctx, &pm.HeartbeatRequest{
@@ -114,24 +116,27 @@ func (s *StorageServer) heartbeatLoop() {
 }
 
 func (s *StorageServer) dumpLoop() {
-	ticker := time.NewTicker(DumpInterval)
+	ticker := time.NewTicker(s.config.DumpTimeout)
 	for {
-		bytes, err := json.Marshal(s)
-		if err != nil {
-			logrus.WithError(err).Error("Marshal JSON failed")
-			continue
-		}
-		file, err := os.OpenFile(path.Join(s.root, DumpFileName), os.O_CREATE|os.O_WRONLY, 0766)
-		if err != nil {
-			logrus.WithError(err).Error("Open dump file falied")
-			file.Close()
-			continue
-		}
-		_, err = file.Write(bytes)
-		if err != nil {
-			logrus.WithError(err).Error("Write dump file failed")
-		}
-		file.Close()
+		func() {
+			s.m.RLock()
+			bytes, err := json.Marshal(s)
+			s.m.RUnlock()
+			if err != nil {
+				logrus.WithError(err).Error("Marshal JSON failed")
+				return
+			}
+			file, err := os.OpenFile(path.Join(s.root, s.config.DumpFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0766)
+			if err != nil {
+				logrus.WithError(err).Error("Open dump file falied")
+				return
+			}
+			defer file.Close()
+			_, err = file.Write(bytes)
+			if err != nil {
+				logrus.WithError(err).Error("Write dump file failed")
+			}
+		}()
 		<-ticker.C
 	}
 }
@@ -159,7 +164,7 @@ func (s *StorageServer) Migrate(ctx context.Context, request *ps.MigrateRequest)
 	}
 	sourceVolume.m.RLock()
 	s.m.RUnlock()
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", sourceVolume))
+	name := path.Join(s.root, fmt.Sprintf("%d.dat", sourceID))
 	file, err := os.Open(name)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
@@ -216,10 +221,27 @@ func (s *StorageServer) Migrate(ctx context.Context, request *ps.MigrateRequest)
 	}
 	targetVolume.Size += 8 + size
 	targetVolume.Content += size
-	if targetVolume.Size >= VolumeMaxSize {
+	if targetVolume.Size >= s.config.VolumeMaxSize {
 		s.addVolume()
 	}
 	return response, nil
+}
+
+func (s *StorageServer) Rotate(ctx context.Context, request *ps.RotateRequest) (*ps.RotateResponse, error) {
+	s.addVolume()
+	return &ps.RotateResponse{}, nil
+}
+
+func (s *StorageServer) DeleteVolume(ctx context.Context, request *ps.DeleteVolumeRequest) (*ps.DeleteVolumeResponse, error) {
+	volumeID := request.VolumeId
+	if volumeID == s.CurrentVolume {
+		return nil, status.Error(codes.FailedPrecondition, "cannot delete current volume")
+	}
+	err := os.Remove(path.Join(s.root, fmt.Sprintf("%d.dat", volumeID)))
+	if err != nil {
+		logrus.WithError(err).Warnf("Delete volume %v failed", volumeID)
+	}
+	return &ps.DeleteVolumeResponse{}, nil
 }
 
 func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
@@ -300,7 +322,7 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 	}
 	volume.Size += 8 + size
 	volume.Content += size
-	if volume.Size >= VolumeMaxSize {
+	if volume.Size >= s.config.VolumeMaxSize {
 		s.addVolume()
 	}
 	return response, nil
@@ -309,7 +331,7 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 func (s *StorageServer) addVolume() {
 	s.m.Lock()
 	defer s.m.Unlock()
-	logrus.Debugf("volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
+	logrus.Debugf("Volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
 	s.CurrentVolume++
 	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume)
 }

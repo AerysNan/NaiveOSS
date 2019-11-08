@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"io/ioutil"
 	"net"
+	"os"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 	"oss/storage"
@@ -15,6 +18,7 @@ var (
 	address  = kingpin.Flag("address", "listen address of storage server").Default("127.0.0.1:8080").String()
 	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("127.0.0.1:8081").String()
 	root     = kingpin.Flag("root", "metadata file path").Default("../data").String()
+	config   = kingpin.Flag("config", "config file full name").Default("../config/storage.json").String()
 	debug    = kingpin.Flag("debug", "use debug level of loggin").Default("false").Bool()
 )
 
@@ -31,7 +35,24 @@ func main() {
 	}
 	defer connection.Close()
 	metadataClient := pm.NewMetadataForStorageClient(connection)
-	storageServer := storage.NewStorageServer(*address, *root, metadataClient)
+	file, err := os.Open(*config)
+	if err != nil {
+		logrus.WithError(err).Fatal("Open config file failed")
+	}
+	config := new(storage.Config)
+	bytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		file.Close()
+		logrus.WithError(err).Fatal("Read config file failed")
+	}
+	err = json.Unmarshal(bytes, config)
+	if err != nil {
+		file.Close()
+		logrus.WithError(err).Fatal("Unmarshal JSON failed")
+	}
+	file.Close()
+
+	storageServer := storage.NewStorageServer(*address, *root, metadataClient, config)
 	listen, err := net.Listen("tcp", *address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
