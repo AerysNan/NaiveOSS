@@ -14,7 +14,7 @@ import (
 var (
 	address  = kingpin.Flag("address", "listen address of proxy server").Default("127.0.0.1:8082").String()
 	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("127.0.0.1:8081").String()
-	debug    = kingpin.Flag("debug", "use debug level of loggin").Default("false").Bool()
+	debug    = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
 
 func main() {
