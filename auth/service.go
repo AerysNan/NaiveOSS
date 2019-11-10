@@ -15,6 +15,7 @@ func (s *AuthServer) start() error {
 	var err error
 	s.db, err = sql.Open("sqlite3", path.Join(s.root, s.config.AuthDBFileName))
 	if err != nil {
+		logrus.Debug(1)
 		return err
 	}
 	_, err = s.db.Exec(
@@ -24,6 +25,7 @@ func (s *AuthServer) start() error {
 			role integer
 		);`)
 	if err != nil {
+		logrus.Debug(2)
 		return err
 	}
 	_, err = s.db.Exec(
@@ -31,14 +33,16 @@ func (s *AuthServer) start() error {
 			name text,
 			bucket text,
 			level integer,
-			primary key(user, bucket));`)
+			primary key(name, bucket));`)
 	if err != nil {
+		logrus.Debug(3)
 		return err
 	}
 	_, err = s.db.Exec(
-		`insert or replace into user values (?, ?, ?);`,
+		`insert or replace into user (name, pass, role) values (?, ?, ?);`,
 		s.config.SuperUserName, fmt.Sprintf("%x", sha256.Sum256([]byte(s.config.SuperUserPassword))), 1)
 	if err != nil {
+		logrus.Debug(4)
 		return err
 	}
 	return nil
@@ -91,7 +95,7 @@ func (s *AuthServer) parseToken(tokenString string) (string, int) {
 }
 
 func (s *AuthServer) addPermission(name string, bucket string, level int) bool {
-	_, err := s.db.Exec(`insert or replace into privilege values (?, ?, ?)`, name, bucket, level)
+	_, err := s.db.Exec(`insert or replace into privilege (name, bucket, level) values (?, ?, ?)`, name, bucket, level)
 	if err != nil {
 		logrus.WithError(err).Error("Insert into table failed")
 		return false
