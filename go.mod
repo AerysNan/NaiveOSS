@@ -9,6 +9,9 @@ require (
 	github.com/gogo/protobuf v1.3.1 // indirect
 	github.com/golang/protobuf v1.3.2
 	github.com/gorilla/mux v1.7.3
+	github.com/klauspost/cpuid v1.2.1 // indirect
+	github.com/klauspost/reedsolomon v1.9.3
+	github.com/natefinch/atomic v0.0.0-20150920032501-a62ce929ffcc
 	github.com/sirupsen/logrus v1.4.2
 	golang.org/x/tools v0.0.0-20191026034945-b2104f82a97d // indirect
 	golang.org/x/tools/gopls v0.1.7

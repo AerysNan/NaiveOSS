@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 
+	"github.com/natefinch/atomic"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,7 +39,7 @@ type MetadataServer struct {
 	m              sync.RWMutex
 	ref            map[string]int64
 	Root           string `json:"-"`
-	Address        string
+	Address        string `json:"-"`
 	TagMap         map[string]*EntryMeta
 	Bucket         map[string]*Bucket
 	storageTimer   map[string]time.Time
@@ -250,19 +252,13 @@ func (s *MetadataServer) dumpLoop() {
 	for {
 		func() {
 			s.m.RLock()
-			bytes, err := json.Marshal(s)
+			data, err := json.Marshal(s)
 			s.m.RUnlock()
 			if err != nil {
 				logrus.WithError(err).Error("Marshal JSON failed")
 				return
 			}
-			file, err := os.OpenFile(path.Join(s.Root, s.config.DumpFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0766)
-			if err != nil {
-				logrus.WithError(err).Error("Open dump file falied")
-				return
-			}
-			defer file.Close()
-			_, err = file.Write(bytes)
+			err = atomic.WriteFile(path.Join(s.Root, s.config.DumpFileName), bytes.NewReader(data))
 			if err != nil {
 				logrus.WithError(err).Error("Write dump file failed")
 			}
