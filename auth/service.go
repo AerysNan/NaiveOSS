@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"oss/global"
 	"path"
 
 	"github.com/dgrijalva/jwt-go"
@@ -112,7 +113,7 @@ func (s *AuthServer) checkGrantPermission(performer string, name string, bucket 
 			logrus.WithError(err).Error("Scan query result failed")
 			return false
 		}
-		if level == PermissionOwner {
+		if level == global.PermissionOwner {
 			return true
 		}
 	} else {

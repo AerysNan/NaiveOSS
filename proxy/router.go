@@ -12,5 +12,8 @@ func NewRouter(proxy *ProxyServer) *mux.Router {
 	router.HandleFunc("/api/object", proxy.getObject).Methods("GET")
 	router.HandleFunc("/api/object", proxy.deleteObject).Methods("DELETE")
 	router.HandleFunc("/api/metadata", proxy.getObjectMeta).Methods("GET")
+	router.HandleFunc("/api/auth", proxy.grantUser).Methods("POST")
+	router.HandleFunc("/api/user", proxy.loginUser).Methods("POST")
+	router.HandleFunc("/api/user", proxy.createUser).Methods("PUT")
 	return router
 }

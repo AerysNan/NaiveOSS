@@ -5,6 +5,7 @@ service AuthForProxy {
   rpc Login(LoginRequest) returns (LoginResponse) {}
   rpc Grant(GrantRequest) returns (GrantResponse) {}
   rpc Check(CheckRequest) returns (CheckResponse) {}
+  rpc Clear(ClearRequest) returns (ClearResponse) {}
   rpc Confirm(ConfirmRequest) returns (ConfirmResponse) {}
   rpc Register(RegisterRequest) returns (RegisterResponse) {}
 }
@@ -34,9 +35,15 @@ message CheckRequest {
 message CheckResponse {}
 
 message ConfirmRequest {
-  string name = 1;
+  string token = 1;
   string bucket = 2;
 }
+
+message ClearRequest {
+  string bucket = 1;
+}
+
+message ClearResponse {}
 
 message ConfirmResponse {}
 

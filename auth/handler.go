@@ -3,24 +3,13 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"oss/global"
 	pa "oss/proto/auth"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-)
-
-const (
-	PermissionNone = iota
-	PermissionRead
-	PermissionWrite
-	PermissionOwner
-)
-
-const (
-	RoleUser = iota
-	RoleAdmin
 )
 
 type Config struct {
@@ -63,10 +52,13 @@ func (s *AuthServer) Grant(ctx context.Context, request *pa.GrantRequest) (*pa.G
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	if role != RoleAdmin {
+	if role != global.RoleAdmin {
 		if !s.checkGrantPermission(performer, request.Name, request.Bucket) {
-			return nil, status.Error(codes.Unauthenticated, "only admin or bucket owner can grant other users")
+			return nil, status.Error(codes.PermissionDenied, "only admin or bucket owner can grant other users")
 		}
+	}
+	if request.Permission < global.PermissionNone || request.Permission > global.PermissionOwner {
+		return nil, status.Error(codes.InvalidArgument, "no such permission level")
 	}
 	success := s.addPermission(request.Name, request.Bucket, int(request.Permission))
 	if !success {
@@ -80,14 +72,14 @@ func (s *AuthServer) Check(ctx context.Context, request *pa.CheckRequest) (*pa.C
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	if role == RoleAdmin || request.Permission == PermissionNone {
+	if role == global.RoleAdmin || request.Permission == global.PermissionNone {
 		return &pa.CheckResponse{}, nil
 	}
 
 	if granted := s.checkActionPermission(performer, role, request.Bucket, int(request.Permission)); granted {
 		return &pa.CheckResponse{}, nil
 	}
-	return nil, status.Error(codes.Unauthenticated, "insufficient permission level")
+	return nil, status.Error(codes.PermissionDenied, "insufficient permission level")
 }
 
 func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) (*pa.RegisterResponse, error) {
@@ -95,8 +87,8 @@ func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) 
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	if role != RoleAdmin {
-		return nil, status.Error(codes.Unauthenticated, "only admin can register user")
+	if role != global.RoleAdmin {
+		return nil, status.Error(codes.PermissionDenied, "only admin can register user")
 	}
 	ok, err := s.checkUserCreation(request.Name)
 	if err != nil {
@@ -104,6 +96,9 @@ func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) 
 	}
 	if !ok {
 		return nil, status.Error(codes.AlreadyExists, "user already exists")
+	}
+	if request.Role < global.RoleUser || request.Role > global.RoleAdmin {
+		return nil, status.Error(codes.InvalidArgument, "invalid role valid")
 	}
 	ok = s.createUser(request.Name, request.Pass, int(request.Role))
 	if !ok {
@@ -113,8 +108,21 @@ func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) 
 }
 
 func (s *AuthServer) Confirm(ctx context.Context, request *pa.ConfirmRequest) (*pa.ConfirmResponse, error) {
-	if !s.addPermission(request.Name, request.Bucket, PermissionOwner) {
+	performer, _ := s.parseToken(request.Token)
+	if len(performer) == 0 {
+		return nil, status.Error(codes.Unauthenticated, "invalid token")
+	}
+	if !s.addPermission(performer, request.Bucket, global.PermissionOwner) {
 		return nil, status.Error(codes.Internal, "authentication database failed")
 	}
 	return &pa.ConfirmResponse{}, nil
+}
+
+func (s *AuthServer) Clear(ctx context.Context, request *pa.ClearRequest) (*pa.ClearResponse, error) {
+	_, err := s.db.Exec(`selete from privilege where bucket=?`, request.Bucket)
+	if err != nil {
+		logrus.WithError(err).Error("Delete table content falied")
+		return nil, status.Error(codes.Internal, "authentication database failed")
+	}
+	return &pa.ClearResponse{}, nil
 }

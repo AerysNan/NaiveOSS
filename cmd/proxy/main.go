@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"oss/proxy"
 
+	pa "oss/proto/auth"
 	pm "oss/proto/metadata"
 
 	"github.com/sirupsen/logrus"
@@ -12,9 +13,10 @@ import (
 )
 
 var (
-	address  = kingpin.Flag("address", "listen address of proxy server").Default("127.0.0.1:8082").String()
-	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("127.0.0.1:8081").String()
-	debug    = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
+	address = kingpin.Flag("address", "listen address of proxy server").Default("127.0.0.1:8082").String()
+	meta    = kingpin.Flag("meta", "listen address of meta server").Default("127.0.0.1:8081").String()
+	auth    = kingpin.Flag("auth", "listen address of auth server").Default("127.0.0.1:8083").String()
+	debug   = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
 
 func main() {
@@ -23,14 +25,21 @@ func main() {
 		logrus.SetLevel(logrus.DebugLevel)
 		logrus.Debug("Log level set to debug")
 	}
-	connection, err := grpc.Dial(*metadata, grpc.WithInsecure())
+	metaConnection, err := grpc.Dial(*meta, grpc.WithInsecure())
 	if err != nil {
 		logrus.WithError(err).Fatal("Connect to metadata server failed")
 		return
 	}
-	defer connection.Close()
-	metadataClient := pm.NewMetadataForProxyClient(connection)
-	server := proxy.NewProxyServer(*address, metadataClient)
+	defer metaConnection.Close()
+	metaClient := pm.NewMetadataForProxyClient(metaConnection)
+	authConnection, err := grpc.Dial(*auth, grpc.WithInsecure())
+	if err != nil {
+		logrus.WithError(err).Fatal("Connect to metadata server failed")
+		return
+	}
+	defer authConnection.Close()
+	authClient := pa.NewAuthForProxyClient(authConnection)
+	server := proxy.NewProxyServer(*address, authClient, metaClient)
 	router := proxy.NewRouter(server)
 	logrus.WithField("address", *address).Info("Server started")
 	err = http.ListenAndServe(*address, router)
