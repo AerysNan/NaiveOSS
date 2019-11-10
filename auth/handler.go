@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"oss/global"
 	pa "oss/proto/auth"
+	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
@@ -20,6 +21,7 @@ type Config struct {
 }
 
 type AuthServer struct {
+	mu     sync.RWMutex
 	root   string
 	config *Config
 	db     *sql.DB
@@ -27,6 +29,7 @@ type AuthServer struct {
 
 func NewAuthServer(root string, config *Config) *AuthServer {
 	authServer := &AuthServer{
+		mu:     sync.RWMutex{},
 		root:   root,
 		config: config,
 	}
@@ -38,6 +41,8 @@ func NewAuthServer(root string, config *Config) *AuthServer {
 }
 
 func (s *AuthServer) Login(ctx context.Context, request *pa.LoginRequest) (*pa.LoginResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	token := s.generateToken(request.Name, request.Pass)
 	if len(token) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "authentication failed")
@@ -52,6 +57,8 @@ func (s *AuthServer) Grant(ctx context.Context, request *pa.GrantRequest) (*pa.G
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if role != global.RoleAdmin {
 		if !s.checkGrantPermission(performer, request.Name, request.Bucket) {
 			return nil, status.Error(codes.PermissionDenied, "only admin or bucket owner can grant other users")
@@ -75,7 +82,8 @@ func (s *AuthServer) Check(ctx context.Context, request *pa.CheckRequest) (*pa.C
 	if role == global.RoleAdmin || request.Permission == global.PermissionNone {
 		return &pa.CheckResponse{}, nil
 	}
-
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if granted := s.checkActionPermission(performer, role, request.Bucket, int(request.Permission)); granted {
 		return &pa.CheckResponse{}, nil
 	}
@@ -90,6 +98,8 @@ func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) 
 	if role != global.RoleAdmin {
 		return nil, status.Error(codes.PermissionDenied, "only admin can register user")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ok, err := s.checkUserCreation(request.Name)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "authentication database failed")
@@ -112,6 +122,8 @@ func (s *AuthServer) Confirm(ctx context.Context, request *pa.ConfirmRequest) (*
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.addPermission(performer, request.Bucket, global.PermissionOwner) {
 		return nil, status.Error(codes.Internal, "authentication database failed")
 	}
@@ -119,9 +131,11 @@ func (s *AuthServer) Confirm(ctx context.Context, request *pa.ConfirmRequest) (*
 }
 
 func (s *AuthServer) Clear(ctx context.Context, request *pa.ClearRequest) (*pa.ClearResponse, error) {
-	_, err := s.db.Exec(`selete from privilege where bucket=?`, request.Bucket)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`delete from privilege where bucket=?`, request.Bucket)
 	if err != nil {
-		logrus.WithError(err).Error("Delete table content falied")
+		logrus.WithError(err).Error("Delete table content failed")
 		return nil, status.Error(codes.Internal, "authentication database failed")
 	}
 	return &pa.ClearResponse{}, nil

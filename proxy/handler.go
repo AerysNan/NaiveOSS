@@ -317,6 +317,7 @@ func (s *ProxyServer) loginUser(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, err)
+		return
 	}
 	writeResponse(w, []byte(response.Token))
 }
@@ -366,6 +367,7 @@ func (s *ProxyServer) createUser(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, err)
+		return
 	}
 	writeResponse(w, nil)
 }

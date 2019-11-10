@@ -20,7 +20,7 @@ func (s *AuthServer) start() error {
 	}
 	_, err = s.db.Exec(
 		`create table if not exists user (
-			name text praimary key,
+			name text primary key,
 			pass text,
 			role integer
 		);`)
@@ -50,7 +50,7 @@ func (s *AuthServer) start() error {
 
 func (s *AuthServer) generateToken(name string, pass string) string {
 	result, err := s.db.Query(
-		`select role from user where name=? and password=?`, name, pass)
+		`select role from user where name=? and pass=?`, name, pass)
 	if err != nil {
 		logrus.WithError(err).Error("Query table failed")
 		return ""
@@ -68,7 +68,7 @@ func (s *AuthServer) generateToken(name string, pass string) string {
 			"role": role,
 		}
 		t := jwt.NewWithClaims(jwt.SigningMethodHS256, claim)
-		token, err := t.SignedString(s.config.JWTSecretKey)
+		token, err := t.SignedString([]byte(s.config.JWTSecretKey))
 		if err != nil {
 			logrus.WithError(err).Error("Sign JWT token failed")
 			return ""
@@ -90,7 +90,7 @@ func (s *AuthServer) parseToken(tokenString string) (string, int) {
 		return "", -1
 	}
 	claim := token.Claims.(jwt.MapClaims)
-	name, role := claim["name"].(string), claim["role"].(int)
+	name, role := claim["name"].(string), int(claim["role"].(float64))
 	return name, role
 }
 
@@ -135,7 +135,7 @@ func (s *AuthServer) checkActionPermission(performer string, role int, bucket st
 	defer result.Close()
 	var level int
 	if result.Next() {
-		err = result.Scan(&result)
+		err = result.Scan(&level)
 		if err != nil {
 			logrus.WithError(err).Error("Scan query result failed")
 			return false
