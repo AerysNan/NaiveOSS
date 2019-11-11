@@ -17,7 +17,7 @@ clean:
 	rm -f *.obj
 	cd proto/metadata && rm -f *.pb.go
 	cd proto/storage && rm -f *.pb.go
-	cd data && rm -f *
+	cd data && rm -rf *
 
 object:
 	python gen.py $(n) $(m)
