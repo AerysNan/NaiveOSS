@@ -2,23 +2,27 @@ package storage
 
 import (
 	"math/rand"
-	"time"
+
+	"github.com/klauspost/reedsolomon"
+	"github.com/sirupsen/logrus"
 )
+
+func encoderInit(config *Config) {
+	var err error
+	enc, err = reedsolomon.New(config.DataShard, config.ParityShard)
+	if err != nil {
+		logrus.WithError(err).Fatal("Encoder init failed")
+	}
+}
 
 func generateRandomNumber(start int, end int, count int) []int {
 	if end < start || (end-start) < count {
 		return nil
 	}
-	nums := make([]int, 0)
-	exist := make(map[int]struct{})
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for len(nums) < count {
-		num := r.Intn(end-start) + start
-		_, ok := exist[num]
-		if !ok {
-			nums = append(nums, num)
-			exist[num] = struct{}{}
-		}
+	nums := make([]int, end-start)
+	for i := start; i < end; i++ {
+		nums[i] = i
 	}
-	return nums
+	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
+	return nums[:count]
 }

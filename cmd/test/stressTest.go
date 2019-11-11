@@ -49,38 +49,43 @@ func serverInit() error {
 		logrus.WithError(err).Fatal("read http response body failed")
 	}
 	for i := 1; i <= 10; i++ {
-		path := fmt.Sprintf("../../%d.obj", i)
-		file, err := os.Open(path)
-		if err != nil {
-			logrus.WithError(err).Fatal("open file failed")
-			return err
-		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			logrus.WithError(err).Fatal("read file failed")
-			return err
-		}
-		reader := bytes.NewReader(content)
-		request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *endpoint, "/api/object"), reader)
-		if err != nil {
-			return err
-		}
-		request.Header.Add("bucket", defaultBucket)
-		request.Header.Add("key", strconv.Itoa(i))
-		request.Header.Add("tag", fmt.Sprintf("%x", sha256.Sum256(content)))
-		response, err := client.Do(request)
-		if err != nil {
-			logrus.WithError(err).Fatal("execute http request failed")
-		}
-		defer response.Body.Close()
-		_, err = ioutil.ReadAll(response.Body)
-		if err != nil {
-			logrus.WithError(err).Fatal("read http response body failed")
-		}
+		w.Add(1)
+		go func(key int) {
+			defer w.Done()
+			path := fmt.Sprintf("./%d.obj", key)
+			file, err := os.Open(path)
+			if err != nil {
+				logrus.WithError(err).Fatal("open file failed")
+			}
+			content, err := ioutil.ReadAll(file)
+			if err != nil {
+				logrus.WithError(err).Fatal("read file failed")
+			}
+			c := http.Client{}
+			reader := bytes.NewReader(content)
+			request, err := http.NewRequest("PUT", fmt.Sprintf("%s%s", *endpoint, "/api/object"), reader)
+			if err != nil {
+				logrus.WithError(err).Fatal("execute http request failed")
+			}
+			request.Header.Add("bucket", defaultBucket)
+			request.Header.Add("key", strconv.Itoa(key))
+			request.Header.Add("tag", fmt.Sprintf("%x", sha256.Sum256(content)))
+			response, err := c.Do(request)
+			if err != nil {
+				logrus.WithError(err).Fatal("execute http request failed")
+			}
+			defer response.Body.Close()
+			_, err = ioutil.ReadAll(response.Body)
+			if err != nil {
+				logrus.WithError(err).Fatal("read http response body failed")
+			}
+		}(i)
 	}
+	w.Wait()
 	return nil
 }
 
+var w sync.WaitGroup
 var wg sync.WaitGroup
 
 func run(num int) {
@@ -93,28 +98,32 @@ func run(num int) {
 	for i := 0; i < num; i++ {
 		request, err := http.NewRequest("GET", fmt.Sprintf("%s%s", *endpoint, "/api/object"), nil)
 		if err != nil {
-			logrus.WithError(err).Fatal("build http request failed")
+			logrus.WithError(err).Error("build http request failed")
+			no++
+			continue
 		}
 		request.Header.Add("bucket", defaultBucket)
 		index := rand.Intn(10) + 1
 		request.Header.Add("key", strconv.Itoa(index))
 		response, err := client.Do(request)
 		if err != nil {
-			logrus.WithError(err).Fatal("execute http request failed")
+			logrus.WithError(err).Error("execute http request failed")
 			no++
 			continue
 		}
 		defer response.Body.Close()
 		if response.StatusCode != 200 {
-			logrus.WithError(err).Fatal("http response status invalid")
+			logrus.WithError(err).Error("http response status invalid")
 			no++
 			continue
 		}
 		content, err := ioutil.ReadAll(response.Body)
 		if err != nil {
-			logrus.WithError(err).Fatal("read http response body failed")
+			logrus.WithError(err).Error("read http response body failed")
+			no++
+			continue
 		}
-		path := fmt.Sprintf("../../%d.obj", index)
+		path := fmt.Sprintf("./%d.obj", index)
 		file, err := os.Open(path)
 		if err != nil {
 			logrus.WithError(err).Fatal("open file failed")
@@ -128,7 +137,7 @@ func run(num int) {
 			no++
 			continue
 		}
-		ok += 1
+		ok++
 	}
 
 	success += ok
