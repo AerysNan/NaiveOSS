@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -15,34 +16,23 @@ import (
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 
+	"github.com/klauspost/reedsolomon"
+	"github.com/natefinch/atomic"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+var enc reedsolomon.Encoder
+
 type Config struct {
 	VolumeMaxSize    int64
 	DumpFileName     string
+	DataShard        int
+	ParityShard      int
+	BSDNum           int
 	DumpTimeout      time.Duration
 	HeartbeatTimeout time.Duration
-}
-
-type Volume struct {
-	m sync.RWMutex
-
-	ID      int64
-	Size    int64
-	Content int64
-}
-
-func NewVolume(id int64) *Volume {
-	return &Volume{
-		ID:      id,
-		Size:    0,
-		Content: 0,
-
-		m: sync.RWMutex{},
-	}
 }
 
 type StorageServer struct {
@@ -50,27 +40,29 @@ type StorageServer struct {
 	ps.StorageForMetadataServer
 	metadataClient pm.MetadataForStorageClient
 
-	address string
-	root    string
-	config  *Config
-	m       sync.RWMutex
-
+	m             sync.RWMutex
+	config        *Config
+	Address       string `json:"-"`
+	Root          string `json:"-"`
+	BSDs          map[int64]*BSD
 	Volumes       map[int64]*Volume
 	CurrentVolume int64
 }
 
 func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient, config *Config) *StorageServer {
+	encoderInit(config)
 	storageServer := &StorageServer{
 		metadataClient: metadataClient,
-		address:        address,
-		config:         config,
-		root:           root,
 		m:              sync.RWMutex{},
-
-		Volumes:       make(map[int64]*Volume),
-		CurrentVolume: 0,
+		config:         config,
+		Address:        address,
+		Root:           root,
+		BSDs:           make(map[int64]*BSD),
+		Volumes:        make(map[int64]*Volume),
+		CurrentVolume:  0,
 	}
 	storageServer.recover()
+	storageServer.bsdInit()
 	storageServer.addVolume()
 	go storageServer.dumpLoop()
 	go storageServer.heartbeatLoop()
@@ -78,7 +70,7 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 }
 
 func (s *StorageServer) recover() {
-	filePath := path.Join(s.root, s.config.DumpFileName)
+	filePath := path.Join(s.Root, s.config.DumpFileName)
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return
@@ -101,12 +93,26 @@ func (s *StorageServer) recover() {
 	}
 }
 
+func (s *StorageServer) bsdInit() {
+	if len(s.BSDs) != s.config.BSDNum {
+		for i := 0; i < s.config.BSDNum; i++ {
+			path := path.Join(s.Root, fmt.Sprintf("BSD_%d", i))
+			err := os.Mkdir(path, os.ModePerm)
+			if err != nil && !os.IsExist(err) {
+				logrus.WithError(err).Errorf("%s init failed", path)
+			} else {
+				s.BSDs[int64(i)] = NewBSD(path)
+			}
+		}
+	}
+}
+
 func (s *StorageServer) heartbeatLoop() {
 	ticker := time.NewTicker(s.config.HeartbeatTimeout)
 	for {
 		ctx := context.Background()
 		_, err := s.metadataClient.Heartbeat(ctx, &pm.HeartbeatRequest{
-			Address: s.address,
+			Address: s.Address,
 		})
 		if err != nil {
 			logrus.WithError(err).Error("Heartbeat failed")
@@ -120,19 +126,13 @@ func (s *StorageServer) dumpLoop() {
 	for {
 		func() {
 			s.m.RLock()
-			bytes, err := json.Marshal(s)
+			data, err := json.Marshal(s)
 			s.m.RUnlock()
 			if err != nil {
 				logrus.WithError(err).Error("Marshal JSON failed")
 				return
 			}
-			file, err := os.OpenFile(path.Join(s.root, s.config.DumpFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0766)
-			if err != nil {
-				logrus.WithError(err).Error("Open dump file falied")
-				return
-			}
-			defer file.Close()
-			_, err = file.Write(bytes)
+			err = atomic.WriteFile(path.Join(s.Root, s.config.DumpFileName), bytes.NewReader(data))
 			if err != nil {
 				logrus.WithError(err).Error("Write dump file failed")
 			}
@@ -142,112 +142,80 @@ func (s *StorageServer) dumpLoop() {
 }
 
 func (s *StorageServer) State(ctx context.Context, request *ps.StateRequest) (*ps.StateResponse, error) {
+	id := request.VolumeId
 	s.m.RLock()
 	defer s.m.RUnlock()
-	id := request.VolumeId
 	volume, ok := s.Volumes[id]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "no such volume")
 	}
+	volume.m.RLock()
+	defer volume.m.RUnlock()
 	return &ps.StateResponse{
 		Size: volume.Content,
 	}, nil
 }
 
 func (s *StorageServer) Migrate(ctx context.Context, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
-	sourceID, sourceOffset := request.VolumeId, request.Offset
-	s.m.RLock()
-	sourceVolume, ok := s.Volumes[sourceID]
-	if !ok {
-		s.m.RUnlock()
-		return nil, status.Error(codes.NotFound, "no such volume")
-	}
-	sourceVolume.m.RLock()
-	s.m.RUnlock()
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", sourceID))
-	file, err := os.Open(name)
+	data, err := s.getObject(request.VolumeId, request.Offset)
 	if err != nil {
-		logrus.WithError(err).Errorf("Open file %v failed", name)
-		return nil, status.Error(codes.Internal, "open data failed")
+		return nil, err
 	}
-	bytes := make([]byte, 8)
-	_, err = file.ReadAt(bytes, sourceOffset)
+	response, err := s.putObject(string(data), "", false)
 	if err != nil {
-		logrus.WithError(err).Errorf("Read file %v failed", name)
-		return nil, status.Error(codes.Internal, "read data failed")
+		return nil, err
 	}
-	size := int64(binary.BigEndian.Uint64(bytes))
-	data := make([]byte, size)
-	_, err = file.ReadAt(data, sourceOffset+8)
-	if err != nil {
-		logrus.WithError(err).Errorf("Read file %v failed", name)
-		return nil, status.Error(codes.Internal, "read data failed")
-	}
-	file.Close()
-	sourceVolume.m.RUnlock()
-
-	s.m.RLock()
-	name = path.Join(s.root, fmt.Sprintf("%d.dat", s.CurrentVolume))
-	currentID := s.CurrentVolume
-	targetVolume, ok := s.Volumes[currentID]
-	if !ok {
-		s.m.RUnlock()
-		return nil, status.Error(codes.NotFound, "no such volume")
-	}
-	targetVolume.m.Lock()
-	defer targetVolume.m.Unlock()
-	s.m.RUnlock()
-	file, err = os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
-	if err != nil {
-		logrus.WithError(err).Errorf("Open file %v failed", name)
-		return nil, status.Error(codes.Internal, "open data failed")
-	}
-	defer file.Close()
-	bytes = make([]byte, 8)
-	binary.BigEndian.PutUint64(bytes, uint64(size))
-	_, err = file.Write(bytes)
-	if err != nil {
-		logrus.WithError(err).Errorf("Write file %v failed", name)
-		return nil, status.Error(codes.Internal, "write data failed")
-	}
-	_, err = file.Write([]byte(data))
-	if err != nil {
-		logrus.WithError(err).Errorf("Write file %v failed", name)
-		return nil, status.Error(codes.Internal, "write data failed")
-	}
-	response := &ps.MigrateResponse{
-		VolumeId: targetVolume.ID,
-		Offset:   targetVolume.Size,
-	}
-	targetVolume.Size += 8 + size
-	targetVolume.Content += size
-	if targetVolume.Size >= s.config.VolumeMaxSize {
-		s.addVolume()
-	}
-	return response, nil
+	return &ps.MigrateResponse{
+		VolumeId: response.VolumeId,
+		Offset:   response.Offset,
+	}, nil
 }
 
 func (s *StorageServer) Rotate(ctx context.Context, request *ps.RotateRequest) (*ps.RotateResponse, error) {
+	s.m.Lock()
+	defer s.m.Unlock()
 	s.addVolume()
 	return &ps.RotateResponse{}, nil
 }
 
 func (s *StorageServer) DeleteVolume(ctx context.Context, request *ps.DeleteVolumeRequest) (*ps.DeleteVolumeResponse, error) {
 	volumeID := request.VolumeId
+	s.m.Lock()
+	defer s.m.Unlock()
 	if volumeID == s.CurrentVolume {
 		return nil, status.Error(codes.FailedPrecondition, "cannot delete current volume")
 	}
-	err := os.Remove(path.Join(s.root, fmt.Sprintf("%d.dat", volumeID)))
-	if err != nil {
-		logrus.WithError(err).Warnf("Delete volume %v failed", volumeID)
+	volume, ok := s.Volumes[volumeID]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "no such volume")
 	}
+	volume.m.Lock()
+	defer volume.m.Unlock()
+	if volume.BlockSize == -1 {
+		err := os.Remove(path.Join(s.Root, fmt.Sprintf("%d.dat", volumeID)))
+		if err != nil {
+			logrus.WithError(err).Warnf("Delete volume %v failed", volumeID)
+		}
+	} else {
+		for _, block := range volume.Blocks {
+			err := os.Remove(block.Path)
+			if err != nil {
+				logrus.WithError(err).Warnf("Delete block %s failed", block.Path)
+			}
+		}
+	}
+	delete(s.Volumes, volumeID)
 	return &ps.DeleteVolumeResponse{}, nil
 }
 
 func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
-	id := request.VolumeId
-	offset := request.Offset
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", id))
+	data, err := s.getObject(request.VolumeId, request.Offset)
+	return &ps.GetResponse{
+		Body: string(data),
+	}, err
+}
+
+func (s *StorageServer) getObject(id, offset int64) ([]byte, error) {
 	s.m.RLock()
 	volume, ok := s.Volumes[id]
 	if !ok {
@@ -255,49 +223,65 @@ func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.Ge
 		return nil, status.Error(codes.NotFound, "no such volume")
 	}
 	volume.m.RLock()
-	defer volume.m.RUnlock()
 	s.m.RUnlock()
-	file, err := os.Open(name)
-	if err != nil {
-		logrus.WithError(err).Errorf("Open file %v failed", name)
-		return nil, status.Error(codes.Internal, "open data failed")
+	var data []byte
+	if volume.BlockSize != -1 {
+		volume.m.RUnlock()
+		bytes, err := volume.readFromBlocks(offset, 8, s.config)
+		if err != nil {
+			return nil, err
+		}
+		data, err = volume.readFromBlocks(offset+8, int64(binary.BigEndian.Uint64(bytes)), s.config)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		defer volume.m.RUnlock()
+		name := path.Join(s.Root, fmt.Sprintf("%d.dat", id))
+		file, err := os.Open(name)
+		if err != nil {
+			logrus.WithError(err).Errorf("Open file %v failed", name)
+			return nil, status.Error(codes.Internal, "open data failed")
+		}
+		defer file.Close()
+		bytes := make([]byte, 8)
+		_, err = file.ReadAt(bytes, offset)
+		if err != nil {
+			logrus.WithError(err).Errorf("Read file %v failed", name)
+			return nil, status.Error(codes.Internal, "read data failed")
+		}
+		data = make([]byte, int64(binary.BigEndian.Uint64(bytes)))
+		_, err = file.ReadAt(data, offset+8)
+		if err != nil {
+			logrus.WithError(err).Errorf("Read file %v failed", name)
+			return nil, status.Error(codes.Internal, "read data failed")
+		}
 	}
-	defer file.Close()
-	bytes := make([]byte, 8)
-	_, err = file.ReadAt(bytes, offset)
-	if err != nil {
-		logrus.WithError(err).Errorf("Read file %v failed", name)
-		return nil, status.Error(codes.Internal, "read data failed")
-	}
-	data := make([]byte, int64(binary.BigEndian.Uint64(bytes)))
-	_, err = file.ReadAt(data, offset+8)
-	if err != nil {
-		logrus.WithError(err).Errorf("Read file %v failed", name)
-		return nil, status.Error(codes.Internal, "read data failed")
-	}
-	return &ps.GetResponse{
-		Body: string(data),
-	}, nil
+	return data, nil
 }
 
 func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
-	data := request.Body
-	tag := fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
-	if tag != request.Tag {
+	return s.putObject(request.Body, request.Tag, true)
+}
+
+func (s *StorageServer) putObject(data, rtag string, check bool) (*ps.PutResponse, error) {
+	if check && fmt.Sprintf("%x", sha256.Sum256([]byte(data))) != rtag {
 		return nil, status.Error(codes.Unauthenticated, "data operation not authenticated")
 	}
 	size := int64(len(data))
-	s.m.RLock()
-	name := path.Join(s.root, fmt.Sprintf("%d.dat", s.CurrentVolume))
-	currentID := s.CurrentVolume
-	volume, ok := s.Volumes[currentID]
-	if !ok {
-		s.m.RUnlock()
-		return nil, status.Error(codes.NotFound, "no such volume")
-	}
+	s.m.Lock()
+	id := s.CurrentVolume
+	volume := s.Volumes[id]
 	volume.m.Lock()
+	offset := volume.Size
+	volume.Size += 8 + size
+	volume.Content += size
+	if volume.Size >= s.config.VolumeMaxSize {
+		s.addVolume()
+	}
 	defer volume.m.Unlock()
-	s.m.RUnlock()
+	s.m.Unlock()
+	name := path.Join(s.Root, fmt.Sprintf("%d.dat", id))
 	file, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
@@ -317,21 +301,27 @@ func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.Pu
 		return nil, status.Error(codes.Internal, "write data failed")
 	}
 	response := &ps.PutResponse{
-		VolumeId: volume.ID,
-		Offset:   volume.Size,
-	}
-	volume.Size += 8 + size
-	volume.Content += size
-	if volume.Size >= s.config.VolumeMaxSize {
-		s.addVolume()
+		VolumeId: id,
+		Offset:   offset,
 	}
 	return response, nil
 }
 
 func (s *StorageServer) addVolume() {
-	s.m.Lock()
-	defer s.m.Unlock()
-	logrus.Debugf("Volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
+	logrus.Infof("Volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
+	volume, ok := s.Volumes[s.CurrentVolume]
+	if ok && volume.Size != 0 {
+		go volume.encode(path.Join(s.Root, fmt.Sprintf("%d.dat", volume.ID)), s.chooseValidBSDs())
+	}
 	s.CurrentVolume++
-	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume)
+	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume, s.config)
+}
+
+func (s *StorageServer) chooseValidBSDs() []*BSD {
+	nums := generateRandomNumber(0, s.config.BSDNum, s.config.DataShard+s.config.ParityShard)
+	res := make([]*BSD, 0)
+	for _, num := range nums {
+		res = append(res, s.BSDs[int64(num)])
+	}
+	return res
 }

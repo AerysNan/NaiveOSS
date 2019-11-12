@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 
+	"github.com/natefinch/atomic"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,7 +39,7 @@ type MetadataServer struct {
 	m              sync.RWMutex
 	ref            map[string]int64
 	Root           string `json:"-"`
-	Address        string
+	Address        string `json:"-"`
 	TagMap         map[string]*EntryMeta
 	Bucket         map[string]*Bucket
 	storageTimer   map[string]time.Time
@@ -100,12 +102,10 @@ func (s *MetadataServer) compactLoop() {
 	ticker := time.NewTicker(s.config.CompactTimeout)
 	for {
 		wg := sync.WaitGroup{}
-		s.m.RLock()
+		s.m.Lock()
 		wg.Add(len(s.Bucket))
 		for _, bucket := range s.Bucket {
 			go func(b *Bucket) {
-				b.m.Lock()
-				defer b.m.Unlock()
 				defer wg.Done()
 				if len(b.SSTable) <= 1 {
 					return
@@ -175,13 +175,17 @@ func (s *MetadataServer) compactLoop() {
 				}
 				b.SSTable = []*Layer{}
 				err = b.writeLayer(entries, volumeIDs, compactedLayer.Begin, compactedLayer.End)
+				for _, volumeID := range volumeIDs {
+					logrus.WithField("action", "compact").Debugf("Referenece increase on volume %v", volumeID)
+					s.ref[volumeID]++
+				}
 				if err != nil {
 					logrus.WithError(err).Error("Write layer failed")
 					return
 				}
 			}(bucket)
 		}
-		s.m.RUnlock()
+		s.m.Unlock()
 		wg.Wait()
 		<-ticker.C
 	}
@@ -248,19 +252,13 @@ func (s *MetadataServer) dumpLoop() {
 	for {
 		func() {
 			s.m.RLock()
-			bytes, err := json.Marshal(s)
+			data, err := json.Marshal(s)
 			s.m.RUnlock()
 			if err != nil {
 				logrus.WithError(err).Error("Marshal JSON failed")
 				return
 			}
-			file, err := os.OpenFile(path.Join(s.Root, s.config.DumpFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0766)
-			if err != nil {
-				logrus.WithError(err).Error("Open dump file falied")
-				return
-			}
-			defer file.Close()
-			_, err = file.Write(bytes)
+			err = atomic.WriteFile(path.Join(s.Root, s.config.DumpFileName), bytes.NewReader(data))
 			if err != nil {
 				logrus.WithError(err).Error("Write dump file failed")
 			}
@@ -272,6 +270,7 @@ func (s *MetadataServer) dumpLoop() {
 func (s *MetadataServer) gcLoop() {
 	ticker := time.NewTicker(s.config.GCTimeout)
 	for {
+		s.m.RLock()
 		for volume, ref := range s.ref {
 			if ref > 0 {
 				continue
@@ -308,6 +307,7 @@ func (s *MetadataServer) gcLoop() {
 				logrus.Debug("GC useless volume succeeded")
 			}
 		}
+		s.m.RUnlock()
 		<-ticker.C
 	}
 }
@@ -420,7 +420,7 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 				return nil, err
 			}
 			for _, v := range volumes {
-				logrus.WithField("action", "put").Debugf("Refernece increase on volume %v", v)
+				logrus.WithField("action", "put").Debugf("Reference increase on volume %v", v)
 				s.ref[v]++
 			}
 		}
@@ -473,7 +473,7 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 			return nil, err
 		}
 		for _, v := range volumes {
-			logrus.WithField("action", "put").Debugf("Refernece increase on volume %v", v)
+			logrus.WithField("action", "put").Debugf("Reference increase on volume %v", v)
 			s.ref[v]++
 		}
 	}
