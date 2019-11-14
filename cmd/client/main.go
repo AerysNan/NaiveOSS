@@ -186,7 +186,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		code: response.StatusCode,
 		body: string(bytes),
 	}
-	if hasToken {
+	if hasToken && response.StatusCode == http.StatusOK {
 		err = saveToken(r.body)
 		if err != nil {
 			return nil, err

@@ -59,10 +59,8 @@ func (s *AuthServer) Grant(ctx context.Context, request *pa.GrantRequest) (*pa.G
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if role != global.RoleAdmin {
-		if !s.checkGrantPermission(performer, request.Name, request.Bucket) {
-			return nil, status.Error(codes.PermissionDenied, "only admin or bucket owner can grant other users")
-		}
+	if role != global.RoleAdmin && !s.checkGrantPermission(performer, request.Name, request.Bucket) {
+		return nil, status.Error(codes.PermissionDenied, "only admin or bucket owner can grant other users")
 	}
 	if request.Permission < global.PermissionNone || request.Permission > global.PermissionOwner {
 		return nil, status.Error(codes.InvalidArgument, "no such permission level")

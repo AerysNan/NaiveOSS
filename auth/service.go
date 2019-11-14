@@ -15,7 +15,6 @@ func (s *AuthServer) start() error {
 	var err error
 	s.db, err = sql.Open("sqlite3", path.Join(s.root, s.config.AuthDBFileName))
 	if err != nil {
-		logrus.Debug(1)
 		return err
 	}
 	_, err = s.db.Exec(
@@ -25,7 +24,6 @@ func (s *AuthServer) start() error {
 			role integer
 		);`)
 	if err != nil {
-		logrus.Debug(2)
 		return err
 	}
 	_, err = s.db.Exec(
@@ -35,14 +33,12 @@ func (s *AuthServer) start() error {
 			level integer,
 			primary key(name, bucket));`)
 	if err != nil {
-		logrus.Debug(3)
 		return err
 	}
 	_, err = s.db.Exec(
 		`insert or replace into user (name, pass, role) values (?, ?, ?);`,
-		s.config.SuperUserName, fmt.Sprintf("%x", sha256.Sum256([]byte(s.config.SuperUserPassword))), 1)
+		s.config.SuperUserName, fmt.Sprintf("%x", sha256.Sum256([]byte(s.config.SuperUserPassword))), global.RoleAdmin)
 	if err != nil {
-		logrus.Debug(4)
 		return err
 	}
 	return nil
@@ -120,8 +116,6 @@ func (s *AuthServer) checkGrantPermission(performer string, name string, bucket 
 		if level == global.PermissionOwner {
 			return true
 		}
-	} else {
-		return false
 	}
 	return false
 }
@@ -162,7 +156,6 @@ func (s *AuthServer) checkUserCreation(name string) (bool, error) {
 		if count == 0 {
 			return true, nil
 		}
-		return false, nil
 	}
 	return false, nil
 }
