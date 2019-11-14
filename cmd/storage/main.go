@@ -19,7 +19,7 @@ var (
 	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("127.0.0.1:8081").String()
 	root     = kingpin.Flag("root", "metadata file path").Default("../data").String()
 	config   = kingpin.Flag("config", "config file full name").Default("../config/storage.json").String()
-	debug    = kingpin.Flag("debug", "use debug level of loggin").Default("false").Bool()
+	debug    = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
 
 func main() {

@@ -1,0 +1,57 @@
+syntax = "proto3";
+package pa;
+
+service AuthForProxy {
+  rpc Login(LoginRequest) returns (LoginResponse) {}
+  rpc Grant(GrantRequest) returns (GrantResponse) {}
+  rpc Check(CheckRequest) returns (CheckResponse) {}
+  rpc Clear(ClearRequest) returns (ClearResponse) {}
+  rpc Confirm(ConfirmRequest) returns (ConfirmResponse) {}
+  rpc Register(RegisterRequest) returns (RegisterResponse) {}
+}
+
+message LoginRequest {
+  string name = 1;
+  string pass = 2;
+}
+
+message LoginResponse { string token = 1; }
+
+message GrantRequest {
+  string token = 1;
+  string name = 2;
+  string bucket = 3;
+  int64 permission = 4;
+}
+
+message GrantResponse {}
+
+message CheckRequest {
+  string token = 1;
+  string bucket = 2;
+  int64 permission = 3;
+}
+
+message CheckResponse {}
+
+message ConfirmRequest {
+  string token = 1;
+  string bucket = 2;
+}
+
+message ClearRequest {
+  string bucket = 1;
+}
+
+message ClearResponse {}
+
+message ConfirmResponse {}
+
+message RegisterRequest {
+  string token = 1;
+  string name = 2;
+  string pass = 3;
+  int64 role = 4;
+}
+
+message RegisterResponse {}

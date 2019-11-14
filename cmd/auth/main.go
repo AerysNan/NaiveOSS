@@ -5,8 +5,8 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
-	"oss/metadata"
-	pm "oss/proto/metadata"
+	"oss/auth"
+	pa "oss/proto/auth"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	address = kingpin.Flag("address", "listen address of metadata server").Default("127.0.0.1:8081").String()
-	root    = kingpin.Flag("root", "metadata file path").Default("../data").String()
-	config  = kingpin.Flag("config", "config file full name").Default("../config/metadata.json").String()
+	address = kingpin.Flag("address", "listen address of auth server").Default("127.0.0.1:8083").String()
+	root    = kingpin.Flag("root", "database file path").Default("../data").String()
+	config  = kingpin.Flag("config", "config file full name").Default("../config/auth.json").String()
 	debug   = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
 
@@ -30,7 +30,7 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Open config file failed")
 	}
-	config := new(metadata.Config)
+	config := new(auth.Config)
 	bytes, err := ioutil.ReadAll(file)
 	if err != nil {
 		file.Close()
@@ -42,14 +42,14 @@ func main() {
 		logrus.WithError(err).Fatal("Unmarshal JSON failed")
 	}
 	file.Close()
-	metadataServer := metadata.NewMetadataServer(*address, *root, config)
+
+	authServer := auth.NewAuthServer(*root, config)
 	listen, err := net.Listen("tcp", *address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
 	}
 	server := grpc.NewServer()
-	pm.RegisterMetadataForStorageServer(server, metadataServer)
-	pm.RegisterMetadataForProxyServer(server, metadataServer)
+	pa.RegisterAuthForProxyServer(server, authServer)
 	logrus.WithField("address", *address).Info("Server started")
 	if err = server.Serve(listen); err != nil {
 		logrus.WithError(err).Fatal("Server failed")
