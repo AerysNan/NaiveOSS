@@ -24,3 +24,9 @@ clean:
 
 object:
 	python gen.py $(n) $(m)
+
+docker:
+	cd cmd/metadata && go build && sudo docker build . -t metadata && rm metadata
+	cd cmd/proxy && go build && sudo docker build . -t proxy && rm proxy
+	cd cmd/storage && go build && sudo docker build . -t storage && rm storage
+	cd cmd/auth && go build && sudo docker build . -t auth && rm auth
