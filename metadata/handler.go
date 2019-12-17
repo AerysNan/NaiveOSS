@@ -298,6 +298,11 @@ func (s *MetadataServer) gcLoop() {
 				logrus.WithField("address", address).Error("Storage client not found")
 				continue
 			}
+			for tag, entry := range s.TagMap {
+				if entry.Volume == volumeID {
+					delete(s.TagMap, tag)
+				}
+			}
 			_, err := client.DeleteVolume(context.Background(), &ps.DeleteVolumeRequest{
 				VolumeId: volumeID,
 			})
