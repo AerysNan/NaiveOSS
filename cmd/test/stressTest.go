@@ -28,7 +28,7 @@ var (
 	about         = 0.0
 	success       = 0.0
 	failure       = 0.0
-	use_time      = 0.0
+	useTime       = 0.0
 )
 
 func serverInit() error {
@@ -147,24 +147,19 @@ func run(num int) {
 }
 
 func main() {
-
-	start_time := time.Now().UnixNano()
-
 	kingpin.Parse()
-
+	startTime := time.Now().UnixNano()
 	serverInit()
 	for i := 0; i < *quantity; i++ {
 		wg.Add(1)
 		go run(*times)
 	}
-
 	wg.Wait()
-	end_time := time.Now().UnixNano()
-
+	endTime := time.Now().UnixNano()
 	fmt.Println("PreTotal:", (*quantity)*(*times))
 	fmt.Println("Total:", total)
 	fmt.Println("Success:", success)
 	fmt.Println("Failure:", failure)
 	fmt.Println("SuccessRate:", fmt.Sprintf("%.2f", ((success/total)*100.0)), "%")
-	fmt.Println("UseTime:", fmt.Sprintf("%.4f", float64(end_time-start_time)/1e9), "s")
+	fmt.Println("UseTime:", fmt.Sprintf("%.4f", float64(endTime-startTime)/1e9), "s")
 }

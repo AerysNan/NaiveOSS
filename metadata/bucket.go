@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// Entry is value entry for
 type Entry struct {
 	Key        string
 	Tag        string
@@ -25,6 +26,7 @@ type Entry struct {
 	Delete     bool
 }
 
+// EntryList represents a list of entries
 type EntryList []*Entry
 
 func (l EntryList) Len() int {
@@ -39,6 +41,7 @@ func (l EntryList) Swap(i int, j int) {
 	l[i], l[j] = l[j], l[i]
 }
 
+// EntryMeta is a reduced version of entry for tag map
 type EntryMeta struct {
 	Address string
 	Volume  int64
@@ -46,6 +49,7 @@ type EntryMeta struct {
 	Size    int64
 }
 
+// Layer represents a single layer struct in sorted string table
 type Layer struct {
 	Name    string
 	Volumes []string
@@ -53,6 +57,7 @@ type Layer struct {
 	End     int
 }
 
+// Bucket is a struct that ensembles a namespace
 type Bucket struct {
 	m          sync.RWMutex
 	root       string

@@ -25,6 +25,7 @@ import (
 
 var enc reedsolomon.Encoder
 
+// Config for storage server
 type Config struct {
 	VolumeMaxSize    int64
 	DumpFileName     string
@@ -35,7 +36,8 @@ type Config struct {
 	HeartbeatTimeout time.Duration
 }
 
-type StorageServer struct {
+// Server represents storage server for storing object data
+type Server struct {
 	ps.StorageForProxyServer
 	ps.StorageForMetadataServer
 	metadataClient pm.MetadataForStorageClient
@@ -49,9 +51,10 @@ type StorageServer struct {
 	CurrentVolume int64
 }
 
-func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient, config *Config) *StorageServer {
+// NewStorageServer returns a new storage server
+func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient, config *Config) *Server {
 	encoderInit(config)
-	storageServer := &StorageServer{
+	storageServer := &Server{
 		metadataClient: metadataClient,
 		m:              sync.RWMutex{},
 		config:         config,
@@ -69,7 +72,7 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 	return storageServer
 }
 
-func (s *StorageServer) recover() {
+func (s *Server) recover() {
 	filePath := path.Join(s.Root, s.config.DumpFileName)
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
@@ -93,7 +96,7 @@ func (s *StorageServer) recover() {
 	}
 }
 
-func (s *StorageServer) bsdInit() {
+func (s *Server) bsdInit() {
 	if len(s.BSDs) != s.config.BSDNum {
 		for i := 0; i < s.config.BSDNum; i++ {
 			path := path.Join(s.Root, fmt.Sprintf("BSD_%d", i))
@@ -107,7 +110,7 @@ func (s *StorageServer) bsdInit() {
 	}
 }
 
-func (s *StorageServer) heartbeatLoop() {
+func (s *Server) heartbeatLoop() {
 	ticker := time.NewTicker(s.config.HeartbeatTimeout)
 	for {
 		ctx := context.Background()
@@ -121,7 +124,7 @@ func (s *StorageServer) heartbeatLoop() {
 	}
 }
 
-func (s *StorageServer) dumpLoop() {
+func (s *Server) dumpLoop() {
 	ticker := time.NewTicker(s.config.DumpTimeout)
 	for {
 		func() {
@@ -141,7 +144,8 @@ func (s *StorageServer) dumpLoop() {
 	}
 }
 
-func (s *StorageServer) State(ctx context.Context, request *ps.StateRequest) (*ps.StateResponse, error) {
+// State handles state check request
+func (s *Server) State(ctx context.Context, request *ps.StateRequest) (*ps.StateResponse, error) {
 	id := request.VolumeId
 	s.m.RLock()
 	defer s.m.RUnlock()
@@ -156,7 +160,8 @@ func (s *StorageServer) State(ctx context.Context, request *ps.StateRequest) (*p
 	}, nil
 }
 
-func (s *StorageServer) Migrate(ctx context.Context, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
+// Migrate transports a block of data to a new volume
+func (s *Server) Migrate(ctx context.Context, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
 	data, err := s.getObject(request.VolumeId, request.Offset)
 	if err != nil {
 		return nil, err
@@ -171,14 +176,16 @@ func (s *StorageServer) Migrate(ctx context.Context, request *ps.MigrateRequest)
 	}, nil
 }
 
-func (s *StorageServer) Rotate(ctx context.Context, request *ps.RotateRequest) (*ps.RotateResponse, error) {
+// Rotate converts a writable volume to read only and create a new volume
+func (s *Server) Rotate(ctx context.Context, request *ps.RotateRequest) (*ps.RotateResponse, error) {
 	s.m.Lock()
 	defer s.m.Unlock()
 	s.addVolume()
 	return &ps.RotateResponse{}, nil
 }
 
-func (s *StorageServer) DeleteVolume(ctx context.Context, request *ps.DeleteVolumeRequest) (*ps.DeleteVolumeResponse, error) {
+// DeleteVolume handles delete volume request
+func (s *Server) DeleteVolume(ctx context.Context, request *ps.DeleteVolumeRequest) (*ps.DeleteVolumeResponse, error) {
 	volumeID := request.VolumeId
 	s.m.Lock()
 	defer s.m.Unlock()
@@ -208,14 +215,15 @@ func (s *StorageServer) DeleteVolume(ctx context.Context, request *ps.DeleteVolu
 	return &ps.DeleteVolumeResponse{}, nil
 }
 
-func (s *StorageServer) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
+// Get handles get data request
+func (s *Server) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
 	data, err := s.getObject(request.VolumeId, request.Offset)
 	return &ps.GetResponse{
 		Body: string(data),
 	}, err
 }
 
-func (s *StorageServer) getObject(id, offset int64) ([]byte, error) {
+func (s *Server) getObject(id, offset int64) ([]byte, error) {
 	s.m.RLock()
 	volume, ok := s.Volumes[id]
 	if !ok {
@@ -260,11 +268,12 @@ func (s *StorageServer) getObject(id, offset int64) ([]byte, error) {
 	return data, nil
 }
 
-func (s *StorageServer) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
+// Put handles put request
+func (s *Server) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
 	return s.putObject(request.Body, request.Tag, true)
 }
 
-func (s *StorageServer) putObject(data, rtag string, check bool) (*ps.PutResponse, error) {
+func (s *Server) putObject(data, rtag string, check bool) (*ps.PutResponse, error) {
 	if check && fmt.Sprintf("%x", sha256.Sum256([]byte(data))) != rtag {
 		return nil, status.Error(codes.Unauthenticated, "data operation not authenticated")
 	}
@@ -307,7 +316,7 @@ func (s *StorageServer) putObject(data, rtag string, check bool) (*ps.PutRespons
 	return response, nil
 }
 
-func (s *StorageServer) addVolume() {
+func (s *Server) addVolume() {
 	logrus.Infof("Volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
 	volume, ok := s.Volumes[s.CurrentVolume]
 	if ok && volume.Size != 0 {
@@ -317,7 +326,7 @@ func (s *StorageServer) addVolume() {
 	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume, s.config)
 }
 
-func (s *StorageServer) chooseValidBSDs() []*BSD {
+func (s *Server) chooseValidBSDs() []*BSD {
 	nums := generateRandomNumber(0, s.config.BSDNum, s.config.DataShard+s.config.ParityShard)
 	res := make([]*BSD, 0)
 	for _, num := range nums {

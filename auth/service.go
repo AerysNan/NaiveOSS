@@ -11,7 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (s *AuthServer) start() error {
+func (s *Server) start() error {
 	var err error
 	s.db, err = sql.Open("sqlite3", path.Join(s.root, s.config.AuthDBFileName))
 	if err != nil {
@@ -44,7 +44,7 @@ func (s *AuthServer) start() error {
 	return nil
 }
 
-func (s *AuthServer) generateToken(name string, pass string) string {
+func (s *Server) generateToken(name string, pass string) string {
 	result, err := s.db.Query(
 		`select role from user where name=? and pass=?`, name, pass)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *AuthServer) generateToken(name string, pass string) string {
 	return ""
 }
 
-func (s *AuthServer) parseToken(tokenString string) (string, int) {
+func (s *Server) parseToken(tokenString string) (string, int) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return []byte(s.config.JWTSecretKey), nil
 	})
@@ -90,7 +90,7 @@ func (s *AuthServer) parseToken(tokenString string) (string, int) {
 	return name, role
 }
 
-func (s *AuthServer) addPermission(name string, bucket string, level int) bool {
+func (s *Server) addPermission(name string, bucket string, level int) bool {
 	_, err := s.db.Exec(`insert or replace into privilege (name, bucket, level) values (?, ?, ?)`, name, bucket, level)
 	if err != nil {
 		logrus.WithError(err).Error("Insert into table failed")
@@ -99,7 +99,7 @@ func (s *AuthServer) addPermission(name string, bucket string, level int) bool {
 	return true
 }
 
-func (s *AuthServer) checkGrantPermission(performer string, name string, bucket string) bool {
+func (s *Server) checkGrantPermission(performer string, name string, bucket string) bool {
 	result, err := s.db.Query(`select level from privilege where name=? and bucket=?`, performer, bucket)
 	if err != nil {
 		logrus.WithError(err).Error("Query table failed")
@@ -120,7 +120,7 @@ func (s *AuthServer) checkGrantPermission(performer string, name string, bucket 
 	return false
 }
 
-func (s *AuthServer) checkActionPermission(performer string, role int, bucket string, permission int) bool {
+func (s *Server) checkActionPermission(performer string, role int, bucket string, permission int) bool {
 	result, err := s.db.Query(`select level from privilege where name=? and bucket=?`, performer, bucket)
 	if err != nil {
 		logrus.WithError(err).Error("Query table failed")
@@ -139,7 +139,7 @@ func (s *AuthServer) checkActionPermission(performer string, role int, bucket st
 	return false
 }
 
-func (s *AuthServer) checkUserCreation(name string) (bool, error) {
+func (s *Server) checkUserCreation(name string) (bool, error) {
 	result, err := s.db.Query(`select count(*) from user where name=?`, name)
 	if err != nil {
 		logrus.WithError(err).Error("Query table failed")
@@ -160,7 +160,7 @@ func (s *AuthServer) checkUserCreation(name string) (bool, error) {
 	return false, nil
 }
 
-func (s *AuthServer) createUser(name string, pass string, role int) bool {
+func (s *Server) createUser(name string, pass string, role int) bool {
 	_, err := s.db.Exec(`insert into user values(?, ?, ?)`, name, pass, role)
 	if err != nil {
 		logrus.WithError(err).Error("Insert into table failed")

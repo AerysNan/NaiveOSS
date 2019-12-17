@@ -13,21 +13,25 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// BSD stands for block storage device
 type BSD struct {
 	Address string
 }
 
+// NewBSD returns a new block storage device struct
 func NewBSD(address string) *BSD {
 	return &BSD{
 		Address: address,
 	}
 }
 
+// Block represents a data block stored on disk
 type Block struct {
 	Tag  string
 	Path string
 }
 
+// NewBlock returns a new block struct
 func NewBlock(tag string, path string) *Block {
 	return &Block{
 		Tag:  tag,
@@ -35,6 +39,7 @@ func NewBlock(tag string, path string) *Block {
 	}
 }
 
+// Volume represents a virtual data container which serves the metadata server
 type Volume struct {
 	m         sync.RWMutex
 	ID        int64
@@ -44,6 +49,7 @@ type Volume struct {
 	Blocks    []*Block
 }
 
+// NewVolume returns a new volume struct
 func NewVolume(id int64, config *Config) *Volume {
 	return &Volume{
 		m:         sync.RWMutex{},
@@ -159,15 +165,14 @@ func (v *Volume) reconstruct(config *Config) error {
 	if err != nil || !ok {
 		logrus.WithField("VolumeID", v.ID).Error("Data corrupted")
 		return status.Error(codes.Internal, "Data Corrupted")
-	} else {
-		logrus.WithField("VolumeID", v.ID).Info("Reconstructing data succeed")
-		v.m.Lock()
-		defer v.m.Unlock()
-		for _, n := range needRepair {
-			err := ioutil.WriteFile(v.Blocks[n].Path, data[n], os.ModePerm)
-			if err != nil {
-				logrus.WithError(err).Errorf("Write file %s failed after reconstructing", v.Blocks[n].Path)
-			}
+	}
+	logrus.WithField("VolumeID", v.ID).Info("Reconstructing data succeed")
+	v.m.Lock()
+	defer v.m.Unlock()
+	for _, n := range needRepair {
+		err := ioutil.WriteFile(v.Blocks[n].Path, data[n], os.ModePerm)
+		if err != nil {
+			logrus.WithError(err).Errorf("Write file %s failed after reconstructing", v.Blocks[n].Path)
 		}
 	}
 	return nil

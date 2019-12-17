@@ -59,17 +59,18 @@ var (
 	createUserFlagRole = createUser.Flag("role", "Role type to determine whether superuser or not").Short('r').Default("0").Int()
 )
 
+// Response represents an OSS response
 type Response struct {
 	code int
 	body string
 }
 
 var (
-	ErrorSaveToken      = errors.New("save token file failed")
-	ErrorReadResponse   = errors.New("read response body failed")
-	ErrorBuildRequest   = errors.New("build http request failed")
-	ErrorReadObjectFile = errors.New("read object file failed")
-	ErrorExecuteRequest = errors.New("execute http request failed")
+	errorSaveToken      = errors.New("save token file failed")
+	errorReadResponse   = errors.New("read response body failed")
+	errorBuildRequest   = errors.New("build http request failed")
+	errorReadObjectFile = errors.New("read object file failed")
+	errorExecuteRequest = errors.New("execute http request failed")
 )
 
 func handle(client *http.Client, cmd string, token string) (*Response, error) {
@@ -81,7 +82,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case loginUser.FullCommand():
 		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/user"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		hasToken = true
 		request.Header.Add("name", *loginUserFlagUser)
@@ -97,21 +98,21 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case createBucket.FullCommand():
 		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/bucket"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *createBucketFlagBucket)
 
 	case deleteBucket.FullCommand():
 		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *addr, "/api/bucket"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *deleteBucketFlagBucket)
 
 	case getObject.FullCommand():
 		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *addr, "/api/object"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *getObjectFlagBucket)
 		request.Header.Add("key", *getObjectFlagKey)
@@ -119,16 +120,16 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case putObject.FullCommand():
 		file, err := os.Open(*putObjectFlagObject)
 		if err != nil {
-			return nil, ErrorReadObjectFile
+			return nil, errorReadObjectFile
 		}
 		content, err := ioutil.ReadAll(file)
 		if err != nil {
-			return nil, ErrorReadObjectFile
+			return nil, errorReadObjectFile
 		}
 		reader := bytes.NewReader(content)
 		request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *addr, "/api/object"), reader)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *putObjectFlagBucket)
 		request.Header.Add("key", *putObjectFlagKey)
@@ -137,7 +138,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case deleteObject.FullCommand():
 		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *addr, "/api/object"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *deleteObjectFlagBucket)
 		request.Header.Add("key", *deleteObjectFlagKey)
@@ -145,7 +146,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case getMeta.FullCommand():
 		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *addr, "/api/metadata"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *getMetaFlagBucket)
 		request.Header.Add("key", *getMetaFlagKey)
@@ -153,7 +154,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case grantUser.FullCommand():
 		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/auth"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("name", *grantUserFlagUser)
 		request.Header.Add("bucket", *grantUserFlagBucket)
@@ -162,7 +163,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	case createUser.FullCommand():
 		request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *addr, "/api/user"), nil)
 		if err != nil {
-			return nil, ErrorBuildRequest
+			return nil, errorBuildRequest
 		}
 		request.Header.Add("name", *createUserFlagUser)
 		request.Header.Add("pass", fmt.Sprintf("%x", sha256.Sum256([]byte(*createUserFlagPass))))
@@ -175,12 +176,12 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	request.Header.Add("token", token)
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, ErrorExecuteRequest
+		return nil, errorExecuteRequest
 	}
 	defer response.Body.Close()
 	bytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return nil, ErrorReadResponse
+		return nil, errorReadResponse
 	}
 	r := &Response{
 		code: response.StatusCode,
@@ -211,12 +212,12 @@ func getToken() string {
 func saveToken(token string) error {
 	file, err := os.OpenFile("token", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0766)
 	if err != nil {
-		return ErrorSaveToken
+		return errorSaveToken
 	}
 	defer file.Close()
 	_, err = file.Write([]byte(token))
 	if err != nil {
-		return ErrorSaveToken
+		return errorSaveToken
 	}
 	return nil
 }

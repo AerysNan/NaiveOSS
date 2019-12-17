@@ -7,12 +7,12 @@ import (
 	pa "oss/proto/auth"
 	"sync"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+// Config for authentication server
 type Config struct {
 	AuthDBFileName    string
 	SuperUserName     string
@@ -20,15 +20,17 @@ type Config struct {
 	JWTSecretKey      string
 }
 
-type AuthServer struct {
+// Server for authentication server struct
+type Server struct {
 	mu     sync.RWMutex
 	root   string
 	config *Config
 	db     *sql.DB
 }
 
-func NewAuthServer(root string, config *Config) *AuthServer {
-	authServer := &AuthServer{
+// NewAuthServer returns a new authentication server
+func NewAuthServer(root string, config *Config) *Server {
+	authServer := &Server{
 		mu:     sync.RWMutex{},
 		root:   root,
 		config: config,
@@ -40,7 +42,8 @@ func NewAuthServer(root string, config *Config) *AuthServer {
 	return authServer
 }
 
-func (s *AuthServer) Login(ctx context.Context, request *pa.LoginRequest) (*pa.LoginResponse, error) {
+// Login handles user login request
+func (s *Server) Login(ctx context.Context, request *pa.LoginRequest) (*pa.LoginResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	token := s.generateToken(request.Name, request.Pass)
@@ -52,7 +55,8 @@ func (s *AuthServer) Login(ctx context.Context, request *pa.LoginRequest) (*pa.L
 	}, nil
 }
 
-func (s *AuthServer) Grant(ctx context.Context, request *pa.GrantRequest) (*pa.GrantResponse, error) {
+// Grant handles user permission granting
+func (s *Server) Grant(ctx context.Context, request *pa.GrantRequest) (*pa.GrantResponse, error) {
 	performer, role := s.parseToken(request.Token)
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
@@ -72,7 +76,8 @@ func (s *AuthServer) Grant(ctx context.Context, request *pa.GrantRequest) (*pa.G
 	return &pa.GrantResponse{}, nil
 }
 
-func (s *AuthServer) Check(ctx context.Context, request *pa.CheckRequest) (*pa.CheckResponse, error) {
+// Check checks if a user has enough permission level to execute certain command
+func (s *Server) Check(ctx context.Context, request *pa.CheckRequest) (*pa.CheckResponse, error) {
 	performer, role := s.parseToken(request.Token)
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
@@ -88,7 +93,8 @@ func (s *AuthServer) Check(ctx context.Context, request *pa.CheckRequest) (*pa.C
 	return nil, status.Error(codes.PermissionDenied, "insufficient permission level")
 }
 
-func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) (*pa.RegisterResponse, error) {
+// Register handles new user creation
+func (s *Server) Register(ctx context.Context, request *pa.RegisterRequest) (*pa.RegisterResponse, error) {
 	performer, role := s.parseToken(request.Token)
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
@@ -115,7 +121,8 @@ func (s *AuthServer) Register(ctx context.Context, request *pa.RegisterRequest) 
 	return &pa.RegisterResponse{}, nil
 }
 
-func (s *AuthServer) Confirm(ctx context.Context, request *pa.ConfirmRequest) (*pa.ConfirmResponse, error) {
+// Confirm grants a user with owner permission after bucket creation
+func (s *Server) Confirm(ctx context.Context, request *pa.ConfirmRequest) (*pa.ConfirmResponse, error) {
 	performer, _ := s.parseToken(request.Token)
 	if len(performer) == 0 {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
@@ -128,7 +135,8 @@ func (s *AuthServer) Confirm(ctx context.Context, request *pa.ConfirmRequest) (*
 	return &pa.ConfirmResponse{}, nil
 }
 
-func (s *AuthServer) Clear(ctx context.Context, request *pa.ClearRequest) (*pa.ClearResponse, error) {
+// Clear clears all privileges associated with a deleted bucket
+func (s *Server) Clear(ctx context.Context, request *pa.ClearRequest) (*pa.ClearResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`delete from privilege where bucket=?`, request.Bucket)

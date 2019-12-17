@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// Config for metadata server
 type Config struct {
 	DumpFileName       string
 	LayerKeyThreshold  int
@@ -31,7 +32,8 @@ type Config struct {
 	GCTimeout          time.Duration
 }
 
-type MetadataServer struct {
+// Server holds metadata information for index look up
+type Server struct {
 	pm.MetadataForStorageServer `json:"-"`
 	pm.MetadataForProxyServer   `json:"-"`
 
@@ -46,8 +48,9 @@ type MetadataServer struct {
 	storageClients map[string]ps.StorageForMetadataClient
 }
 
-func NewMetadataServer(address string, root string, config *Config) *MetadataServer {
-	s := &MetadataServer{
+// NewMetadataServer returns a new metadata server
+func NewMetadataServer(address string, root string, config *Config) *Server {
+	s := &Server{
 		m:              sync.RWMutex{},
 		ref:            make(map[string]int64),
 		config:         config,
@@ -66,7 +69,7 @@ func NewMetadataServer(address string, root string, config *Config) *MetadataSer
 	return s
 }
 
-func (s *MetadataServer) recover() {
+func (s *Server) recover() {
 	filePath := path.Join(s.Root, s.config.DumpFileName)
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
@@ -98,7 +101,7 @@ func (s *MetadataServer) recover() {
 	}
 }
 
-func (s *MetadataServer) compactLoop() {
+func (s *Server) compactLoop() {
 	ticker := time.NewTicker(s.config.CompactTimeout)
 	for {
 		wg := sync.WaitGroup{}
@@ -191,7 +194,7 @@ func (s *MetadataServer) compactLoop() {
 	}
 }
 
-func (s *MetadataServer) compress(address string, volumeID int64, entries []*Entry) ([]*Entry, error) {
+func (s *Server) compress(address string, volumeID int64, entries []*Entry) ([]*Entry, error) {
 	logrus.WithFields(logrus.Fields{
 		"address":  address,
 		"volumeID": volumeID,
@@ -233,7 +236,7 @@ func (s *MetadataServer) compress(address string, volumeID int64, entries []*Ent
 	return resultEntries, nil
 }
 
-func (s *MetadataServer) heartbeatLoop() {
+func (s *Server) heartbeatLoop() {
 	ticker := time.NewTicker(s.config.HeartbeatTimeout)
 	for {
 		for address, t := range s.storageTimer {
@@ -247,7 +250,7 @@ func (s *MetadataServer) heartbeatLoop() {
 	}
 }
 
-func (s *MetadataServer) dumpLoop() {
+func (s *Server) dumpLoop() {
 	ticker := time.NewTicker(s.config.DumpTimeout)
 	for {
 		func() {
@@ -267,7 +270,7 @@ func (s *MetadataServer) dumpLoop() {
 	}
 }
 
-func (s *MetadataServer) gcLoop() {
+func (s *Server) gcLoop() {
 	ticker := time.NewTicker(s.config.GCTimeout)
 	for {
 		s.m.RLock()
@@ -317,7 +320,7 @@ func (s *MetadataServer) gcLoop() {
 	}
 }
 
-func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error) {
+func (s *Server) searchEntry(bucket *Bucket, key string) (*Entry, error) {
 	entry, ok := bucket.MemoMap[key]
 	if ok {
 		return entry, nil
@@ -344,7 +347,8 @@ func (s *MetadataServer) searchEntry(bucket *Bucket, key string) (*Entry, error)
 	return nil, nil
 }
 
-func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
+// Heartbeat deals heartbeat requests from storage servers
+func (s *Server) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
 	address := request.Address
 	s.m.Lock()
 	defer s.m.Unlock()
@@ -363,7 +367,8 @@ func (s *MetadataServer) Heartbeat(ctx context.Context, request *pm.HeartbeatReq
 	return &pm.HeartbeatResponse{}, nil
 }
 
-func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
+// CreateBucket handles bucket creation request
+func (s *Server) CreateBucket(ctx context.Context, request *pm.CreateBucketRequest) (*pm.CreateBucketResponse, error) {
 	bucketName := request.Bucket
 	s.m.Lock()
 	defer s.m.Unlock()
@@ -385,7 +390,8 @@ func (s *MetadataServer) CreateBucket(ctx context.Context, request *pm.CreateBuc
 	return &pm.CreateBucketResponse{}, nil
 }
 
-func (s *MetadataServer) DeleteBucket(ctx context.Context, request *pm.DeleteBucketRequest) (*pm.DeleteBucketResponse, error) {
+// DeleteBucket handles bucket deletion request
+func (s *Server) DeleteBucket(ctx context.Context, request *pm.DeleteBucketRequest) (*pm.DeleteBucketResponse, error) {
 	bucketName := request.Bucket
 	s.m.Lock()
 	defer s.m.Unlock()
@@ -407,7 +413,8 @@ func (s *MetadataServer) DeleteBucket(ctx context.Context, request *pm.DeleteBuc
 	return &pm.DeleteBucketResponse{}, nil
 }
 
-func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*pm.CheckMetaResponse, error) {
+// CheckMeta checks the existence of object metadata before putting object to avoid data duplicity
+func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*pm.CheckMetaResponse, error) {
 	s.m.RLock()
 	defer s.m.RUnlock()
 	bucket, ok := s.Bucket[request.Bucket]
@@ -453,7 +460,8 @@ func (s *MetadataServer) CheckMeta(ctx context.Context, request *pm.CheckMetaReq
 	return nil, status.Error(codes.Unavailable, "no storage device available")
 }
 
-func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.PutMetaResponse, error) {
+// PutMeta adds an key value entry to index structure
+func (s *Server) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.PutMetaResponse, error) {
 	s.m.RLock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
@@ -494,7 +502,8 @@ func (s *MetadataServer) PutMeta(ctx context.Context, request *pm.PutMetaRequest
 	return &pm.PutMetaResponse{}, nil
 }
 
-func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.GetMetaResponse, error) {
+// GetMeta handles get metadata request
+func (s *Server) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.GetMetaResponse, error) {
 	s.m.RLock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {
@@ -520,7 +529,8 @@ func (s *MetadataServer) GetMeta(ctx context.Context, request *pm.GetMetaRequest
 	}, nil
 }
 
-func (s *MetadataServer) DeleteMeta(ctx context.Context, request *pm.DeleteMetaRequest) (*pm.DeleteMetaResponse, error) {
+// DeleteMeta handles delete metadata request
+func (s *Server) DeleteMeta(ctx context.Context, request *pm.DeleteMetaRequest) (*pm.DeleteMetaResponse, error) {
 	s.m.RLock()
 	bucket, ok := s.Bucket[request.Bucket]
 	if !ok {

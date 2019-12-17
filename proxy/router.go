@@ -4,7 +4,8 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func NewRouter(proxy *ProxyServer) *mux.Router {
+// NewRouter returns a new HTTP router
+func NewRouter(proxy *Server) *mux.Router {
 	router := mux.NewRouter().StrictSlash(true)
 	router.HandleFunc("/api/bucket", proxy.createBucket).Methods("POST")
 	router.HandleFunc("/api/bucket", proxy.deleteBucket).Methods("DELETE")

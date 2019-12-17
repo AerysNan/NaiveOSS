@@ -21,7 +21,8 @@ import (
 
 var maxStorageConnection = 10
 
-type ProxyServer struct {
+// Server represents a proxy server for request redirecting
+type Server struct {
 	http.Handler
 	authClient  pa.AuthForProxyClient
 	metaClient  pm.MetadataForProxyClient
@@ -30,8 +31,9 @@ type ProxyServer struct {
 	address     string
 }
 
-func NewProxyServer(address string, authClient pa.AuthForProxyClient, metadataClient pm.MetadataForProxyClient) *ProxyServer {
-	return &ProxyServer{
+// NewProxyServer returns a new proxy server
+func NewProxyServer(address string, authClient pa.AuthForProxyClient, metadataClient pm.MetadataForProxyClient) *Server {
+	return &Server{
 		address:     address,
 		m:           new(sync.RWMutex),
 		authClient:  authClient,
@@ -40,7 +42,7 @@ func NewProxyServer(address string, authClient pa.AuthForProxyClient, metadataCl
 	}
 }
 
-func (s *ProxyServer) createBucket(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createBucket(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -74,7 +76,7 @@ func (s *ProxyServer) createBucket(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) deleteBucket(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -106,7 +108,7 @@ func (s *ProxyServer) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) putObject(w http.ResponseWriter, r *http.Request) {
+func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "key", "tag", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -192,7 +194,7 @@ func (s *ProxyServer) putObject(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) getObject(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getObject(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "key", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -250,7 +252,7 @@ func (s *ProxyServer) getObject(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, []byte(getResponse.Body))
 }
 
-func (s *ProxyServer) deleteObject(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "key", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -277,7 +279,7 @@ func (s *ProxyServer) deleteObject(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) getObjectMeta(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getObjectMeta(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "key", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -304,7 +306,7 @@ func (s *ProxyServer) getObjectMeta(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, []byte(response.String()))
 }
 
-func (s *ProxyServer) loginUser(w http.ResponseWriter, r *http.Request) {
+func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"name", "pass"})
 	if err != nil {
 		writeError(w, err)
@@ -322,7 +324,7 @@ func (s *ProxyServer) loginUser(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, []byte(response.Token))
 }
 
-func (s *ProxyServer) grantUser(w http.ResponseWriter, r *http.Request) {
+func (s *Server) grantUser(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"name", "bucket", "permission", "token"})
 	if err != nil {
 		writeError(w, err)
@@ -347,7 +349,7 @@ func (s *ProxyServer) grantUser(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *ProxyServer) createUser(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"name", "pass", "role", "token"})
 	if err != nil {
 		writeError(w, err)
