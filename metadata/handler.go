@@ -389,11 +389,20 @@ func (s *MetadataServer) DeleteBucket(ctx context.Context, request *pm.DeleteBuc
 	bucketName := request.Bucket
 	s.m.Lock()
 	defer s.m.Unlock()
-	_, ok := s.Bucket[bucketName]
+	b, ok := s.Bucket[bucketName]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "bucket not found")
 	}
 	logrus.WithField("bucket", bucketName).Debug("Delete bucket")
+	for _, layer := range b.SSTable {
+		s.ref[layer.Name]--
+		name := fmt.Sprintf("%v-%v-%v", b.Name, layer.Begin, layer.End)
+		err := os.Remove(path.Join(b.root, name))
+		if err != nil {
+			logrus.WithField("bucket", bucketName).Error("delete layer file failed")
+		}
+	}
+
 	delete(s.Bucket, bucketName)
 	return &pm.DeleteBucketResponse{}, nil
 }
