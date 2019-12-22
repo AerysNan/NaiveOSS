@@ -13,3 +13,8 @@ const (
 	RoleUser = iota
 	RoleAdmin
 )
+
+const (
+	MaxTransportSize = 1 << 32
+	MaxChunkSize     = 1 << 25
+)

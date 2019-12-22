@@ -15,7 +15,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.11.0
 	github.com/natefinch/atomic v0.0.0-20150920032501-a62ce929ffcc
 	github.com/sirupsen/logrus v1.4.2
-	golang.org/x/tools v0.0.0-20191026034945-b2104f82a97d // indirect
+	go.uber.org/atomic v1.5.1
 	golang.org/x/tools/gopls v0.1.7
 	google.golang.org/grpc v1.24.0
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6

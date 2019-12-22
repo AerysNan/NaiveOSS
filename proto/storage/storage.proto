@@ -8,9 +8,7 @@ service StorageForMetadata {
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse) {}
 }
 
-message StateRequest {
-  int64 volume_id = 1;
-}
+message StateRequest { int64 volume_id = 1; }
 
 message StateResponse { int64 size = 1; }
 
@@ -34,22 +32,43 @@ message DeleteVolumeResponse {}
 
 service StorageForProxy {
   rpc Get(GetRequest) returns (GetResponse) {}
+  rpc Create(CreateRequest) returns (CreateResponse) {}
   rpc Put(PutRequest) returns (PutResponse) {}
+  rpc Confirm(ConfirmRequest) returns (ConfirmResponse) {}
+  rpc CheckBlob(CheckBlobRequest) returns (CheckBlobResponse) {}
 }
 
 message GetRequest {
   int64 volume_id = 1;
   int64 offset = 2;
+  int64 start = 3;
 }
 
-message GetResponse { string body = 1; }
+message GetResponse { bytes body = 1; }
 
-message PutRequest {
-  string body = 1;
+message CreateRequest { 
+  string tag = 1; 
+  string id = 2;
+}
+
+message CreateResponse {}
+
+message PutRequest { 
+  bytes body = 1; 
   string tag = 2;
+  int64 offset = 3;
 }
 
-message PutResponse {
+message PutResponse {}
+
+message ConfirmRequest { string tag = 1; }
+
+message ConfirmResponse {
   int64 volume_id = 1;
   int64 offset = 2;
+  int64 size = 3;
 }
+
+message CheckBlobRequest {}
+
+message CheckBlobResponse { repeated string id = 1; } 

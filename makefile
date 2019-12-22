@@ -11,9 +11,9 @@ protobuf:
 binary:
 	cd cmd/metadata && go build -o ../../build/metadata
 	cd cmd/proxy && go build -o ../../build/proxy
+	cd cmd/auth && go build -o ../../build/auth
 	cd cmd/storage && go build -o ../../build/storage
 	cd cmd/client && go build -o ../../build/client
-	cd cmd/auth && go build -o ../../build/auth
 
 clean:
 	rm -f *.obj

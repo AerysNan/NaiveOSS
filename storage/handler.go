@@ -34,6 +34,7 @@ type Config struct {
 	BSDNum           int
 	DumpTimeout      time.Duration
 	HeartbeatTimeout time.Duration
+	ValidBlobTimeOut time.Duration
 }
 
 // Server represents storage server for storing object data
@@ -47,11 +48,11 @@ type Server struct {
 	Address       string `json:"-"`
 	Root          string `json:"-"`
 	BSDs          map[int64]*BSD
+	Blobs         map[string]*Blob
 	Volumes       map[int64]*Volume
 	CurrentVolume int64
 }
 
-// NewStorageServer returns a new storage server
 func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient, config *Config) *Server {
 	encoderInit(config)
 	storageServer := &Server{
@@ -60,6 +61,7 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 		config:         config,
 		Address:        address,
 		Root:           root,
+		Blobs:          make(map[string]*Blob),
 		BSDs:           make(map[int64]*BSD),
 		Volumes:        make(map[int64]*Volume),
 		CurrentVolume:  0,
@@ -144,7 +146,27 @@ func (s *Server) dumpLoop() {
 	}
 }
 
-// State handles state check request
+func (s *Server) CheckBlob(ctx context.Context, request *ps.CheckBlobRequest) (*ps.CheckBlobResponse, error) {
+	s.m.RLock()
+	blobs := s.Blobs
+	s.m.RUnlock()
+	result := make([]string, 0)
+	for _, blob := range blobs {
+		if blob.Time.Add(s.config.ValidBlobTimeOut).Before(time.Now()) {
+			name := path.Join(s.Root, fmt.Sprintf("%s.tmp", blob.Tag))
+			result = append(result, blob.Id)
+			s.m.Lock()
+			delete(s.Blobs, blob.Tag)
+			_ = os.Remove(name)
+			logrus.WithField("name", name).Warn("Blob expired")
+			s.m.Unlock()
+		}
+	}
+	return &ps.CheckBlobResponse{
+		Id: result,
+	}, nil
+}
+
 func (s *Server) State(ctx context.Context, request *ps.StateRequest) (*ps.StateResponse, error) {
 	id := request.VolumeId
 	s.m.RLock()
@@ -160,13 +182,12 @@ func (s *Server) State(ctx context.Context, request *ps.StateRequest) (*ps.State
 	}, nil
 }
 
-// Migrate transports a block of data to a new volume
 func (s *Server) Migrate(ctx context.Context, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
-	data, err := s.getObject(request.VolumeId, request.Offset)
+	data, err := s.getObject(request.VolumeId, request.Offset, 0)
 	if err != nil {
 		return nil, err
 	}
-	response, err := s.putObject(string(data), "", false)
+	response, err := s.putObject(data)
 	if err != nil {
 		return nil, err
 	}
@@ -215,15 +236,14 @@ func (s *Server) DeleteVolume(ctx context.Context, request *ps.DeleteVolumeReque
 	return &ps.DeleteVolumeResponse{}, nil
 }
 
-// Get handles get data request
 func (s *Server) Get(ctx context.Context, request *ps.GetRequest) (*ps.GetResponse, error) {
-	data, err := s.getObject(request.VolumeId, request.Offset)
+	data, err := s.getObject(request.VolumeId, request.Offset, request.Start)
 	return &ps.GetResponse{
-		Body: string(data),
+		Body: data,
 	}, err
 }
 
-func (s *Server) getObject(id, offset int64) ([]byte, error) {
+func (s *Server) getObject(id, offset, start int64) ([]byte, error) {
 	s.m.RLock()
 	volume, ok := s.Volumes[id]
 	if !ok {
@@ -239,7 +259,14 @@ func (s *Server) getObject(id, offset int64) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		data, err = volume.readFromBlocks(offset+8, int64(binary.BigEndian.Uint64(bytes)), s.config)
+		size := int64(binary.BigEndian.Uint64(bytes))
+		if start > size {
+			return nil, status.Error(codes.InvalidArgument, "object offset overflow")
+		}
+		if start == size {
+			return nil, status.Error(codes.Unknown, "empty data response")
+		}
+		data, err = volume.readFromBlocks(offset+8+start, size-start, s.config)
 		if err != nil {
 			return nil, err
 		}
@@ -258,8 +285,15 @@ func (s *Server) getObject(id, offset int64) ([]byte, error) {
 			logrus.WithError(err).Errorf("Read file %v failed", name)
 			return nil, status.Error(codes.Internal, "read data failed")
 		}
-		data = make([]byte, int64(binary.BigEndian.Uint64(bytes)))
-		_, err = file.ReadAt(data, offset+8)
+		size := int64(binary.BigEndian.Uint64(bytes))
+		if start > size {
+			return nil, status.Error(codes.InvalidArgument, "object offset overflow")
+		}
+		if start == size {
+			return nil, status.Error(codes.Unknown, "empty data response")
+		}
+		data = make([]byte, size-start)
+		_, err = file.ReadAt(data, offset+8+start)
 		if err != nil {
 			logrus.WithError(err).Errorf("Read file %v failed", name)
 			return nil, status.Error(codes.Internal, "read data failed")
@@ -268,15 +302,67 @@ func (s *Server) getObject(id, offset int64) ([]byte, error) {
 	return data, nil
 }
 
-// Put handles put request
-func (s *Server) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
-	return s.putObject(request.Body, request.Tag, true)
+func (s *Server) Create(ctx context.Context, request *ps.CreateRequest) (*ps.CreateResponse, error) {
+	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Tag))
+	_, err := os.Create(name)
+	if err != nil {
+		logrus.WithError(err).Errorf("Create file %v failed", name)
+		return nil, status.Error(codes.Internal, "create tmp file failed")
+	}
+	s.m.Lock()
+	s.Blobs[request.Tag] = NewBlob(request.Id, request.Tag)
+	s.m.Unlock()
+	return &ps.CreateResponse{}, nil
 }
 
-func (s *Server) putObject(data, rtag string, check bool) (*ps.PutResponse, error) {
-	if check && fmt.Sprintf("%x", sha256.Sum256([]byte(data))) != rtag {
-		return nil, status.Error(codes.Unauthenticated, "data operation not authenticated")
+func (s *Server) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
+	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Tag))
+	blob, ok := s.Blobs[request.Tag]
+	if !ok {
+		logrus.Errorf("file %v cleared", name)
+		return nil, status.Error(codes.Internal, "tmp file cleared")
 	}
+	blob.m.Lock()
+	defer blob.m.Unlock()
+	file, err := os.OpenFile(name, os.O_WRONLY, 0766)
+	defer file.Close()
+	if err != nil {
+		logrus.WithError(err).Errorf("Open file %v failed", name)
+		return nil, status.Error(codes.Internal, "open data failed")
+	}
+	_, err = file.WriteAt(request.Body, request.Offset)
+	if err != nil {
+		logrus.WithError(err).Errorf("Write file %v failed", name)
+		return nil, status.Error(codes.Internal, "write data failed")
+	}
+	return &ps.PutResponse{}, nil
+}
+
+func (s *Server) Confirm(ctx context.Context, request *ps.ConfirmRequest) (*ps.ConfirmResponse, error) {
+	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Tag))
+	file, err := os.Open(name)
+	defer file.Close()
+	if err != nil {
+		logrus.WithError(err).Errorf("Open file %v failed", name)
+		return nil, status.Error(codes.Internal, "open data failed")
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		logrus.WithError(err).Errorf("Read file %v failed", name)
+		return nil, status.Error(codes.Internal, "read data failed")
+	}
+	s.m.Lock()
+	_ = os.Remove(name)
+	delete(s.Blobs, request.Tag)
+	s.m.Unlock()
+	if fmt.Sprintf("%x", sha256.Sum256(content)) != request.Tag {
+		logrus.Errorf("Upload file %v failed", name)
+		return nil, status.Error(codes.Internal, "upload file failed")
+	}
+	return s.putObject(content)
+}
+
+func (s *Server) putObject(data []byte) (*ps.ConfirmResponse, error) {
 	size := int64(len(data))
 	s.m.Lock()
 	id := s.CurrentVolume
@@ -304,12 +390,12 @@ func (s *Server) putObject(data, rtag string, check bool) (*ps.PutResponse, erro
 		logrus.WithError(err).Errorf("Write file %v failed", name)
 		return nil, status.Error(codes.Internal, "write data failed")
 	}
-	_, err = file.Write([]byte(data))
+	_, err = file.Write(data)
 	if err != nil {
 		logrus.WithError(err).Errorf("Write file %v failed", name)
 		return nil, status.Error(codes.Internal, "write data failed")
 	}
-	response := &ps.PutResponse{
+	response := &ps.ConfirmResponse{
 		VolumeId: id,
 		Offset:   offset,
 	}

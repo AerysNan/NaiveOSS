@@ -9,6 +9,7 @@ import (
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/sirupsen/logrus"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func (s *Server) start() error {

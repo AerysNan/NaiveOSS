@@ -2,43 +2,72 @@ package proxy
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"oss/global"
 	pa "oss/proto/auth"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 
+	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-var maxStorageConnection = 10
+const maxStorageConnection = 10
+const checkExpiredBlobsTimeout = 360000000000
 
-// Server represents a proxy server for request redirecting
 type Server struct {
 	http.Handler
 	authClient  pa.AuthForProxyClient
 	metaClient  pm.MetadataForProxyClient
 	dataClients map[string]*grpc.ClientConn
 	m           *sync.RWMutex
-	address     string
+	UploadTask  map[string]string
+	Address     string
 }
 
-// NewProxyServer returns a new proxy server
 func NewProxyServer(address string, authClient pa.AuthForProxyClient, metadataClient pm.MetadataForProxyClient) *Server {
-	return &Server{
-		address:     address,
+	s := &Server{
+		Address:     address,
+		UploadTask:  make(map[string]string),
 		m:           new(sync.RWMutex),
 		authClient:  authClient,
 		metaClient:  metadataClient,
 		dataClients: make(map[string]*grpc.ClientConn),
+	}
+	go s.checkExpiredBlobs()
+	return s
+}
+
+func (s *Server) checkExpiredBlobs() {
+	ticker := time.NewTicker(checkExpiredBlobsTimeout)
+	for {
+		s.m.RLock()
+		conns := s.dataClients
+		s.m.RUnlock()
+		blobs := make([]string, 0)
+		for address, conn := range conns {
+			client := ps.NewStorageForProxyClient(conn)
+			response, err := client.CheckBlob(context.Background(), &ps.CheckBlobRequest{})
+			if err != nil {
+				logrus.WithField("address", address).Warn("connection fail")
+			}
+			blobs = append(blobs, response.Id...)
+		}
+		s.m.Lock()
+		for _, id := range blobs {
+			if _, ok := s.UploadTask[id]; ok {
+				delete(s.UploadTask, id)
+			}
+		}
+		s.m.Unlock()
+		<-ticker.C
 	}
 }
 
@@ -108,31 +137,21 @@ func (s *Server) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(r, []string{"bucket", "key", "tag", "token"})
+func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket", "key", "tag", "token", "id"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	bucket, key, rtag, token := p["bucket"], p["key"], p["tag"], p["token"]
-	_, err = s.authClient.Check(context.Background(), &pa.CheckRequest{
+	bucket, key, tag, token, id := p["bucket"], p["key"], p["tag"], p["token"], p["id"]
+	ctx := context.Background()
+	_, err = s.authClient.Check(ctx, &pa.CheckRequest{
 		Token:      token,
 		Bucket:     bucket,
 		Permission: global.PermissionWrite,
 	})
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	ctx := context.Background()
-	tag := fmt.Sprintf("%x", sha256.Sum256(body))
-	if tag != rtag {
-		writeError(w, status.Error(codes.Unknown, "data transmission error"))
 		return
 	}
 	response, err := s.metaClient.CheckMeta(ctx, &pm.CheckMetaRequest{
@@ -145,34 +164,70 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if response.Existed {
-		writeResponse(w, nil)
+		writeResponse(w, []byte(strconv.Itoa(0)))
 		return
+	}
+	if id != "0" {
+		s.m.RLock()
+		_, ok := s.UploadTask[id]
+		s.m.RUnlock()
+		if ok {
+			writeResponse(w, []byte(id))
+			return
+		}
 	}
 	address := response.Address
 	s.m.Lock()
-	connection, ok := s.dataClients[address]
-	if !ok {
-		connection, err = grpc.Dial(address, grpc.WithInsecure())
-		if err != nil {
-			writeError(w, err)
-			s.m.Unlock()
-			return
-		}
-		if len(s.dataClients) >= maxStorageConnection {
-			for k := range s.dataClients {
-				s.dataClients[k].Close()
-				delete(s.dataClients, k)
-				s.dataClients[address] = connection
-				break
-			}
-		}
-	}
+	id = strconv.FormatInt(time.Now().UnixNano(), 10)
+	s.UploadTask[id] = address
 	s.m.Unlock()
+	connection, err := s.validateConnection(address)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	storageClient := ps.NewStorageForProxyClient(connection)
-	ctx = context.Background()
-	putResponse, err := storageClient.Put(ctx, &ps.PutRequest{
-		Body: string(body),
-		Tag:  tag,
+	_, err = storageClient.Create(ctx, &ps.CreateRequest{
+		Tag: tag,
+		Id:  id,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResponse(w, []byte(id))
+}
+
+func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"id", "bucket", "key", "tag", "token"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	id, key, bucket, tag, token := p["id"], p["key"], p["bucket"], p["tag"], p["token"]
+	ctx := context.Background()
+	_, err = s.authClient.Check(ctx, &pa.CheckRequest{
+		Token:      token,
+		Bucket:     bucket,
+		Permission: global.PermissionWrite,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	address, ok := s.UploadTask[id]
+	if !ok {
+		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
+		return
+	}
+	connection, err := s.validateConnection(address)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	storageClient := ps.NewStorageForProxyClient(connection)
+	confirmResponse, err := storageClient.Confirm(ctx, &ps.ConfirmRequest{
+		Tag: tag,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -183,9 +238,55 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		Key:      key,
 		Tag:      tag,
 		Address:  address,
-		VolumeId: putResponse.VolumeId,
-		Offset:   putResponse.Offset,
-		Size:     int64(len(body)),
+		VolumeId: confirmResponse.VolumeId,
+		Offset:   confirmResponse.Offset,
+		Size:     confirmResponse.Size,
+	})
+	writeResponse(w, nil)
+}
+
+func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"id", "bucket", "tag", "offset", "token"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	id, offsetS, bucket, tag, token := p["id"], p["offset"], p["bucket"], p["tag"], p["token"]
+	ctx := context.Background()
+	_, err = s.authClient.Check(ctx, &pa.CheckRequest{
+		Token:      token,
+		Bucket:     bucket,
+		Permission: global.PermissionWrite,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	offset, err := strconv.ParseInt(offsetS, 10, 64)
+	if err != nil {
+		writeError(w, status.Error(codes.InvalidArgument, "invalid upload file offset"))
+		return
+	}
+	address, ok := s.UploadTask[id]
+	if !ok {
+		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
+		return
+	}
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	connection, err := s.validateConnection(address)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	storageClient := ps.NewStorageForProxyClient(connection)
+	_, err = storageClient.Put(ctx, &ps.PutRequest{
+		Body:   body,
+		Tag:    tag,
+		Offset: offset,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -195,12 +296,13 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getObject(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(r, []string{"bucket", "key", "token"})
+	p, err := checkParameter(r, []string{"bucket", "key", "token", "start"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	bucket, key, token := p["bucket"], p["key"], p["token"]
+	bucket, key, token, startS := p["bucket"], p["key"], p["token"], p["start"]
+	start, _ := strconv.ParseInt(startS, 10, 64)
 	_, err = s.authClient.Check(context.Background(), &pa.CheckRequest{
 		Token:      token,
 		Bucket:     bucket,
@@ -220,30 +322,16 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	address := getMetaResponse.Address
-	s.m.Lock()
-	connection, ok := s.dataClients[address]
-	if !ok {
-		connection, err = grpc.Dial(address, grpc.WithInsecure())
-		if err != nil {
-			writeError(w, err)
-			s.m.Unlock()
-			return
-		}
-		if len(s.dataClients) >= maxStorageConnection {
-			for k := range s.dataClients {
-				s.dataClients[k].Close()
-				delete(s.dataClients, k)
-				s.dataClients[address] = connection
-				break
-			}
-		}
+	connection, err := s.validateConnection(address)
+	if err != nil {
+		writeError(w, err)
+		return
 	}
-	s.m.Unlock()
 	storageClient := ps.NewStorageForProxyClient(connection)
-	ctx = context.Background()
 	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{
 		VolumeId: getMetaResponse.VolumeId,
 		Offset:   getMetaResponse.Offset,
+		Start:    start,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -372,4 +460,29 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, nil)
+}
+
+func (s *Server) validateConnection(address string) (*grpc.ClientConn, error) {
+	s.m.RLock()
+	connection, ok := s.dataClients[address]
+	s.m.RUnlock()
+	var err error
+	if !ok {
+		diaOpt := grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(global.MaxTransportSize), grpc.MaxCallRecvMsgSize(global.MaxTransportSize))
+		connection, err = grpc.Dial(address, grpc.WithInsecure(), diaOpt)
+		if err != nil {
+			return nil, err
+		}
+		s.m.Lock()
+		if len(s.dataClients) >= maxStorageConnection {
+			for k := range s.dataClients {
+				s.dataClients[k].Close()
+				delete(s.dataClients, k)
+				break
+			}
+		}
+		s.dataClients[address] = connection
+		s.m.Unlock()
+	}
+	return connection, nil
 }
