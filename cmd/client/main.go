@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -282,33 +283,39 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		return nil, errorExecuteRequest
 	}
 	defer response.Body.Close()
-	bytes, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return nil, errorReadResponse
-	}
-	r := &Response{
-		code: response.StatusCode,
-		body: string(bytes),
-	}
-	if hasToken && response.StatusCode == http.StatusOK {
-		err = saveToken(r.body)
-		if err != nil {
-			return nil, err
-		}
-		r.body = "OK"
-	}
+	r := &Response{code: response.StatusCode}
 	if getFile {
 		path := fmt.Sprintf("%s", *getObjectFlagKey)
 		if response.StatusCode == http.StatusOK {
-			err = saveFile(bytes, path)
-			if err != nil {
-				return nil, err
+			for {
+				bytes := make([]byte, global.MaxChunkSize)
+				count, err := response.Body.Read(bytes)
+				if err == io.EOF {
+					break
+				}
+				err = saveFile(bytes[:count], path)
+				if err != nil {
+					return nil, err
+				}
 			}
 			r.body = fmt.Sprintf("The file has been saved to file %s", path)
 		} else if response.StatusCode == http.StatusForbidden {
 			r.code = http.StatusOK
 			r.body = fmt.Sprintf("The file %s already exists.", path)
 		}
+		return r, nil
+	}
+	bytes, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, errorReadResponse
+	}
+	r.body = string(bytes)
+	if hasToken && response.StatusCode == http.StatusOK {
+		err = saveToken(r.body)
+		if err != nil {
+			return nil, err
+		}
+		r.body = "OK"
 	}
 	return r, nil
 }
