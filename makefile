@@ -30,3 +30,6 @@ docker:
 	cd cmd/proxy && go build && sudo docker build . -t proxy && rm proxy
 	cd cmd/storage && go build && sudo docker build . -t storage && rm storage
 	cd cmd/auth && go build && sudo docker build . -t auth && rm auth
+
+test:
+	go run cmd/test/parallelTest.go
