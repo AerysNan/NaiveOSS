@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"oss/global"
 	"strconv"
 
+	"github.com/natefinch/atomic"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gopkg.in/alecthomas/kingpin.v2"
@@ -65,11 +69,20 @@ type Response struct {
 	body string
 }
 
+type Task struct {
+	Id    string
+	Index int64
+}
+
 var (
 	errorSaveToken      = errors.New("save token file failed")
+	errorSaveObject     = errors.New("save object file failed")
+	errorReadTaskFile   = errors.New("read task file failed")
+	errorParseTaskFile  = errors.New("parse task file failed")
 	errorReadResponse   = errors.New("read response body failed")
 	errorBuildRequest   = errors.New("build http request failed")
 	errorReadObjectFile = errors.New("read object file failed")
+	errorPutObjectFile  = errors.New("put object file failed")
 	errorExecuteRequest = errors.New("execute http request failed")
 )
 
@@ -77,6 +90,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	var request *http.Request
 	var err error
 	hasToken := false
+	getFile := false
 
 	switch cmd {
 	case loginUser.FullCommand():
@@ -110,12 +124,22 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		request.Header.Add("bucket", *deleteBucketFlagBucket)
 
 	case getObject.FullCommand():
+		file, err := os.Stat(fmt.Sprintf("%s", *getObjectFlagKey))
+		var start int64
+		if err != nil {
+			start = 0
+		} else {
+			start = file.Size()
+			fmt.Printf("start downloading object from offset %d\n", start)
+		}
+		getFile = true
 		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *addr, "/api/object"), nil)
 		if err != nil {
 			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *getObjectFlagBucket)
 		request.Header.Add("key", *getObjectFlagKey)
+		request.Header.Add("start", strconv.FormatInt(start, 10))
 
 	case putObject.FullCommand():
 		file, err := os.Open(*putObjectFlagObject)
@@ -126,14 +150,94 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		if err != nil {
 			return nil, errorReadObjectFile
 		}
-		reader := bytes.NewReader(content)
-		request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *addr, "/api/object"), reader)
+		tag := fmt.Sprintf("%x", sha256.Sum256(content))
+		r := &Response{}
+		t := &Task{Id: "0"}
+		name := fmt.Sprintf("tmp_%s", *putObjectFlagKey)
+		file, err = os.Open(name)
+		if err == nil {
+			bytes, err := ioutil.ReadAll(file)
+			if err != nil {
+				return nil, errorReadTaskFile
+			}
+			file.Close()
+			err = json.Unmarshal(bytes, &t)
+			if err != nil {
+				return nil, errorParseTaskFile
+			}
+		}
+		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/task"), nil)
 		if err != nil {
 			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *putObjectFlagBucket)
 		request.Header.Add("key", *putObjectFlagKey)
-		request.Header.Add("tag", fmt.Sprintf("%x", sha256.Sum256(content)))
+		request.Header.Add("tag", tag)
+		request.Header.Add("token", token)
+		request.Header.Add("id", t.Id)
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, errorExecuteRequest
+		}
+		id, err := ioutil.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			return nil, errorReadResponse
+		}
+		if string(id) == "0" {
+			_ = os.Remove(name)
+			r.code = http.StatusOK
+			r.body = "OK"
+			return r, nil
+		}
+		if t.Id != string(id) {
+			t.Id = string(id)
+			t.Index = 0
+		}
+		offset := t.Index * global.MaxChunkSize
+		for offset < int64(len(content)) {
+			end := offset + global.MaxChunkSize
+			if end > int64(len(content)) {
+				end = int64(len(content))
+			}
+			reader := bytes.NewReader(content[offset:end])
+			request, err = http.NewRequest("PUT", fmt.Sprintf("%s%s", *addr, "/api/object"), reader)
+			if err != nil {
+				return nil, err
+			}
+			request.Header.Add("id", t.Id)
+			request.Header.Add("bucket", *putObjectFlagBucket)
+			request.Header.Add("tag", tag)
+			request.Header.Add("offset", strconv.FormatInt(offset, 10))
+			request.Header.Add("token", token)
+			response, err := client.Do(request)
+			if err != nil {
+				return nil, err
+			}
+			if response.StatusCode != http.StatusOK {
+				_ = os.Remove(name)
+				return nil, errorPutObjectFile
+			}
+			t.Index++
+			offset += global.MaxChunkSize
+			data, err := json.Marshal(t)
+			if err != nil {
+				continue
+			}
+			err = atomic.WriteFile(name, bytes.NewReader(data))
+			if err != nil {
+				continue
+			}
+		}
+		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *addr, "/api/task"), nil)
+		if err != nil {
+			return nil, errorBuildRequest
+		}
+		_ = os.Remove(name)
+		request.Header.Add("id", t.Id)
+		request.Header.Add("bucket", *putObjectFlagBucket)
+		request.Header.Add("key", *putObjectFlagKey)
+		request.Header.Add("tag", tag)
 
 	case deleteObject.FullCommand():
 		request, err = http.NewRequest("DELETE", fmt.Sprintf("%s%s", *addr, "/api/object"), nil)
@@ -179,14 +283,33 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		return nil, errorExecuteRequest
 	}
 	defer response.Body.Close()
+	r := &Response{code: response.StatusCode}
+	if getFile {
+		path := fmt.Sprintf("%s", *getObjectFlagKey)
+		if response.StatusCode == http.StatusOK {
+			for {
+				bytes := make([]byte, global.MaxChunkSize)
+				count, err := response.Body.Read(bytes)
+				if err == io.EOF {
+					break
+				}
+				err = saveFile(bytes[:count], path)
+				if err != nil {
+					return nil, err
+				}
+			}
+			r.body = fmt.Sprintf("The file has been saved to file %s", path)
+		} else if response.StatusCode == http.StatusForbidden {
+			r.code = http.StatusOK
+			r.body = fmt.Sprintf("The file %s already exists.", path)
+		}
+		return r, nil
+	}
 	bytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		return nil, errorReadResponse
 	}
-	r := &Response{
-		code: response.StatusCode,
-		body: string(bytes),
-	}
+	r.body = string(bytes)
 	if hasToken && response.StatusCode == http.StatusOK {
 		err = saveToken(r.body)
 		if err != nil {
@@ -222,6 +345,19 @@ func saveToken(token string) error {
 	return nil
 }
 
+func saveFile(content []byte, filename string) error {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0766)
+	if err != nil {
+		return errorSaveObject
+	}
+	defer file.Close()
+	_, err = file.Write(content)
+	if err != nil {
+		return errorSaveObject
+	}
+	return nil
+}
+
 func main() {
 	client := &http.Client{}
 	token := getToken()
@@ -235,7 +371,7 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 	} else if response.code != http.StatusOK {
 		fmt.Printf("Error: %v\n", string(response.body))
-	} else {
+	} else if len(response.body) != 0 {
 		fmt.Println(string(response.body))
 	}
 }

@@ -7,13 +7,29 @@ import (
 	"os"
 	"path"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// BSD stands for block storage device
+type Blob struct {
+	Id   string
+	Tag  string
+	Time time.Time
+	m    sync.RWMutex
+}
+
+func NewBlob(id, tag string) *Blob {
+	return &Blob{
+		Id:   id,
+		Tag:  tag,
+		Time: time.Now(),
+		m:    sync.RWMutex{},
+	}
+}
+
 type BSD struct {
 	Address string
 }

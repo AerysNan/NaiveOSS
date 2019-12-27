@@ -39,8 +39,8 @@ func main() {
 	}
 	defer authConnection.Close()
 	authClient := pa.NewAuthForProxyClient(authConnection)
-	server := proxy.NewProxyServer(*address, authClient, metaClient)
-	router := proxy.NewRouter(server)
+	proxyServer := proxy.NewProxyServer(*address, authClient, metaClient)
+	router := proxy.NewRouter(proxyServer)
 	logrus.WithField("address", *address).Info("Server started")
 	err = http.ListenAndServe(*address, router)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path"
 	"sync"
@@ -451,11 +452,20 @@ func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*
 			Address: "",
 		}, nil
 	}
-	for address := range s.storageClients {
-		return &pm.CheckMetaResponse{
-			Existed: false,
-			Address: address,
-		}, nil
+	s.m.RLock()
+	defer s.m.RUnlock()
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if len(s.storageClients) != 0 {
+		index := r.Intn(len(s.storageClients))
+		for address := range s.storageClients {
+			if index == 0 {
+				return &pm.CheckMetaResponse{
+					Existed: false,
+					Address: address,
+				}, nil
+			}
+			index--
+		}
 	}
 	return nil, status.Error(codes.Unavailable, "no storage device available")
 }

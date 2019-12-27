@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"oss/global"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 	"oss/storage"
@@ -28,13 +29,13 @@ func main() {
 		logrus.SetLevel(logrus.DebugLevel)
 		logrus.Debug("Log level set to debug")
 	}
-	connection, err := grpc.Dial(*metadata, grpc.WithInsecure())
+	metaConnection, err := grpc.Dial(*metadata, grpc.WithInsecure())
 	if err != nil {
 		logrus.WithError(err).Fatal("Connect to metadata server failed")
 		return
 	}
-	defer connection.Close()
-	metadataClient := pm.NewMetadataForStorageClient(connection)
+	defer metaConnection.Close()
+	metadataClient := pm.NewMetadataForStorageClient(metaConnection)
 	file, err := os.Open(*config)
 	if err != nil {
 		logrus.WithError(err).Fatal("Open config file failed")
@@ -51,13 +52,12 @@ func main() {
 		logrus.WithError(err).Fatal("Unmarshal JSON failed")
 	}
 	file.Close()
-
 	storageServer := storage.NewStorageServer(*address, *root, metadataClient, config)
 	listen, err := net.Listen("tcp", *address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
 	}
-	server := grpc.NewServer()
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(global.MaxTransportSize), grpc.MaxSendMsgSize(global.MaxTransportSize))
 	ps.RegisterStorageForMetadataServer(server, storageServer)
 	ps.RegisterStorageForProxyServer(server, storageServer)
 	logrus.WithField("address", *address).Info("Server started")
