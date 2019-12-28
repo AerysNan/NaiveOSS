@@ -47,21 +47,21 @@ message GetRequest {
 message GetResponse { bytes body = 1; }
 
 message CreateRequest { 
-  string tag = 1; 
-  string id = 2;
+  string id = 1; 
+  string tag = 2;
 }
 
 message CreateResponse {}
 
 message PutRequest { 
   bytes body = 1; 
-  string tag = 2;
+  string id = 2;
   int64 offset = 3;
 }
 
 message PutResponse {}
 
-message ConfirmRequest { string tag = 1; }
+message ConfirmRequest { string id = 1; }
 
 message ConfirmResponse {
   int64 volume_id = 1;

@@ -207,7 +207,6 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 			}
 			request.Header.Add("id", t.Id)
 			request.Header.Add("bucket", *putObjectFlagBucket)
-			request.Header.Add("tag", tag)
 			request.Header.Add("offset", strconv.FormatInt(offset, 10))
 			request.Header.Add("token", token)
 			response, err := client.Do(request)
@@ -216,7 +215,11 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 			}
 			if response.StatusCode != http.StatusOK {
 				_ = os.Remove(name)
-				return nil, errorPutObjectFile
+				content, err := ioutil.ReadAll(response.Body)
+				if err != nil {
+					return nil, err
+				}
+				return nil, errors.New(string(content))
 			}
 			t.Index++
 			offset += global.MaxChunkSize
@@ -291,6 +294,12 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 				bytes := make([]byte, global.MaxChunkSize)
 				count, err := response.Body.Read(bytes)
 				if err == io.EOF {
+					if count != 0 {
+						err = saveFile(bytes[:count], path)
+						if err != nil {
+							return nil, err
+						}
+					}
 					break
 				}
 				err = saveFile(bytes[:count], path)

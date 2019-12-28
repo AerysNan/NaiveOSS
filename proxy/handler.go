@@ -227,7 +227,7 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 	}
 	storageClient := ps.NewStorageForProxyClient(connection)
 	confirmResponse, err := storageClient.Confirm(ctx, &ps.ConfirmRequest{
-		Tag: tag,
+		Id: id,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -246,12 +246,12 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(r, []string{"id", "bucket", "tag", "offset", "token"})
+	p, err := checkParameter(r, []string{"id", "bucket", "offset", "token"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	id, offsetS, bucket, tag, token := p["id"], p["offset"], p["bucket"], p["tag"], p["token"]
+	id, offsetS, bucket, token := p["id"], p["offset"], p["bucket"], p["token"]
 	ctx := context.Background()
 	_, err = s.authClient.Check(ctx, &pa.CheckRequest{
 		Token:      token,
@@ -285,7 +285,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	storageClient := ps.NewStorageForProxyClient(connection)
 	_, err = storageClient.Put(ctx, &ps.PutRequest{
 		Body:   body,
-		Tag:    tag,
+		Id:     id,
 		Offset: offset,
 	})
 	if err != nil {

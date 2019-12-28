@@ -303,21 +303,21 @@ func (s *Server) getObject(id, offset, start int64) ([]byte, error) {
 }
 
 func (s *Server) Create(ctx context.Context, request *ps.CreateRequest) (*ps.CreateResponse, error) {
-	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Tag))
+	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Id))
 	_, err := os.Create(name)
 	if err != nil {
 		logrus.WithError(err).Errorf("Create file %v failed", name)
 		return nil, status.Error(codes.Internal, "create tmp file failed")
 	}
 	s.m.Lock()
-	s.Blobs[request.Tag] = NewBlob(request.Id, request.Tag)
+	s.Blobs[request.Id] = NewBlob(request.Id, request.Tag)
 	s.m.Unlock()
 	return &ps.CreateResponse{}, nil
 }
 
 func (s *Server) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutResponse, error) {
-	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Tag))
-	blob, ok := s.Blobs[request.Tag]
+	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Id))
+	blob, ok := s.Blobs[request.Id]
 	if !ok {
 		logrus.Errorf("file %v cleared", name)
 		return nil, status.Error(codes.Internal, "tmp file cleared")
@@ -339,7 +339,14 @@ func (s *Server) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutRespon
 }
 
 func (s *Server) Confirm(ctx context.Context, request *ps.ConfirmRequest) (*ps.ConfirmResponse, error) {
-	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Tag))
+	name := path.Join(s.Root, fmt.Sprintf("%s.tmp", request.Id))
+	blob, ok := s.Blobs[request.Id]
+	if !ok {
+		logrus.Errorf("file %v cleared", name)
+		return nil, status.Error(codes.Internal, "tmp file cleared")
+	}
+	blob.m.Lock()
+	defer blob.m.Unlock()
 	file, err := os.Open(name)
 	defer file.Close()
 	if err != nil {
@@ -353,9 +360,9 @@ func (s *Server) Confirm(ctx context.Context, request *ps.ConfirmRequest) (*ps.C
 	}
 	s.m.Lock()
 	_ = os.Remove(name)
-	delete(s.Blobs, request.Tag)
+	delete(s.Blobs, request.Id)
 	s.m.Unlock()
-	if fmt.Sprintf("%x", sha256.Sum256(content)) != request.Tag {
+	if fmt.Sprintf("%x", sha256.Sum256(content)) != blob.Tag {
 		logrus.Errorf("Upload file %v failed", name)
 		return nil, status.Error(codes.Internal, "upload file failed")
 	}

@@ -1,4 +1,4 @@
-FROM keinos/sqlite3:latest
+FROM ubuntu:latest
 RUN mkdir -p /workspace/bin
 RUN mkdir /workspace/data
 RUN mkdir /workspace/config
