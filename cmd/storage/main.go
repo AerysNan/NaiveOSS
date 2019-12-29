@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -16,8 +17,9 @@ import (
 )
 
 var (
-	address  = kingpin.Flag("address", "listen address of storage server").Default("127.0.0.1:8080").String()
-	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("127.0.0.1:8081").String()
+	address  = kingpin.Flag("address", "address of storage server").Default("0.0.0.0:8080").String()
+	port     = kingpin.Flag("port", "listen port of storage server").Default("8080").String()
+	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("0.0.0.0:8081").String()
 	root     = kingpin.Flag("root", "metadata file path").Default("../data").String()
 	config   = kingpin.Flag("config", "config file full name").Default("../config/storage.json").String()
 	debug    = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
@@ -53,14 +55,15 @@ func main() {
 	}
 	file.Close()
 	storageServer := storage.NewStorageServer(*address, *root, metadataClient, config)
-	listen, err := net.Listen("tcp", *address)
+	listenAddress := fmt.Sprintf("%s:%s", "0.0.0.0", *port)
+	listen, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(global.MaxTransportSize), grpc.MaxSendMsgSize(global.MaxTransportSize))
 	ps.RegisterStorageForMetadataServer(server, storageServer)
 	ps.RegisterStorageForProxyServer(server, storageServer)
-	logrus.WithField("address", *address).Info("Server started")
+	logrus.WithField("address", listenAddress).Info("Server started")
 	if err = server.Serve(listen); err != nil {
 		logrus.WithError(err).Fatal("Server failed")
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -14,10 +15,10 @@ import (
 )
 
 var (
-	address = kingpin.Flag("address", "listen address of auth server").Default("127.0.0.1:8083").String()
-	root    = kingpin.Flag("root", "database file path").Default("../data").String()
-	config  = kingpin.Flag("config", "config file full name").Default("../config/auth.json").String()
-	debug   = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
+	port   = kingpin.Flag("port", "listen port of auth server").Default("8083").String()
+	root   = kingpin.Flag("root", "database file path").Default("../data").String()
+	config = kingpin.Flag("config", "config file full name").Default("../config/auth.json").String()
+	debug  = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
 
 func main() {
@@ -44,13 +45,14 @@ func main() {
 	file.Close()
 
 	authServer := auth.NewAuthServer(*root, config)
-	listen, err := net.Listen("tcp", *address)
+	address := fmt.Sprintf("%s:%s", "0.0.0.0", *port)
+	listen, err := net.Listen("tcp", address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
 	}
 	server := grpc.NewServer()
 	pa.RegisterAuthForProxyServer(server, authServer)
-	logrus.WithField("address", *address).Info("Server started")
+	logrus.WithField("address", address).Info("Server started")
 	if err = server.Serve(listen); err != nil {
 		logrus.WithError(err).Fatal("Server failed")
 	}
