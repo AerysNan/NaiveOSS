@@ -34,7 +34,7 @@ type Config struct {
 	BSDNum           int
 	DumpTimeout      time.Duration
 	HeartbeatTimeout time.Duration
-	ValidBlobTimeOut time.Duration
+	ValidBlobTimeout time.Duration
 }
 
 // Server represents storage server for storing object data
@@ -152,7 +152,7 @@ func (s *Server) CheckBlob(ctx context.Context, request *ps.CheckBlobRequest) (*
 	s.m.RUnlock()
 	result := make([]string, 0)
 	for _, blob := range blobs {
-		if blob.Time.Add(s.config.ValidBlobTimeOut).Before(time.Now()) {
+		if blob.Time.Add(s.config.ValidBlobTimeout).Before(time.Now()) {
 			name := path.Join(s.Root, fmt.Sprintf("%s.tmp", blob.Tag))
 			result = append(result, blob.Id)
 			s.m.Lock()
