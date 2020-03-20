@@ -124,7 +124,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		request.Header.Add("bucket", *deleteBucketFlagBucket)
 
 	case getObject.FullCommand():
-		file, err := os.Stat(fmt.Sprintf("%s", *getObjectFlagKey))
+		file, err := os.Stat(*getObjectFlagKey)
 		var start int64
 		if err != nil {
 			start = 0
@@ -177,7 +177,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		request.Header.Add("id", t.Id)
 		response, err := client.Do(request)
 		if err != nil {
-			return nil, errorExecuteRequest
+			return nil, errorPutObjectFile
 		}
 		id, err := ioutil.ReadAll(response.Body)
 		response.Body.Close()
@@ -288,7 +288,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	defer response.Body.Close()
 	r := &Response{code: response.StatusCode}
 	if getFile {
-		path := fmt.Sprintf("%s", *getObjectFlagKey)
+		path := *getObjectFlagKey
 		if response.StatusCode == http.StatusOK {
 			for {
 				bytes := make([]byte, global.MaxChunkSize)

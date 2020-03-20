@@ -325,7 +325,12 @@ func (s *Server) Put(ctx context.Context, request *ps.PutRequest) (*ps.PutRespon
 	blob.m.Lock()
 	defer blob.m.Unlock()
 	file, err := os.OpenFile(name, os.O_WRONLY, 0766)
-	defer file.Close()
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			logrus.WithError(err).Errorf("Close file %v failed", name)
+		}
+	}()
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
 		return nil, status.Error(codes.Internal, "open data failed")
@@ -348,7 +353,12 @@ func (s *Server) Confirm(ctx context.Context, request *ps.ConfirmRequest) (*ps.C
 	blob.m.Lock()
 	defer blob.m.Unlock()
 	file, err := os.Open(name)
-	defer file.Close()
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			logrus.WithError(err).Errorf("Close file %v failed", name)
+		}
+	}()
 	if err != nil {
 		logrus.WithError(err).Errorf("Open file %v failed", name)
 		return nil, status.Error(codes.Internal, "open data failed")

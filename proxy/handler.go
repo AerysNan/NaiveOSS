@@ -62,9 +62,7 @@ func (s *Server) checkExpiredBlobs() {
 		}
 		s.m.Lock()
 		for _, id := range blobs {
-			if _, ok := s.UploadTask[id]; ok {
-				delete(s.UploadTask, id)
-			}
+			delete(s.UploadTask, id)
 		}
 		s.m.Unlock()
 		<-ticker.C
@@ -242,6 +240,10 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 		Offset:   confirmResponse.Offset,
 		Size:     confirmResponse.Size,
 	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	writeResponse(w, nil)
 }
 

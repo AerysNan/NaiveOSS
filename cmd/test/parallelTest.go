@@ -164,7 +164,7 @@ func (test *Test) Put(key, filepath string) error {
 func (test *Test) Get(key string) error {
 	client := &http.Client{}
 	getObjectFlagKey := &key
-	file, err := os.Stat(fmt.Sprintf("%s", *getObjectFlagKey))
+	file, err := os.Stat(*getObjectFlagKey)
 	var start int64
 	if err != nil {
 		start = 0
@@ -248,8 +248,10 @@ func (t *Test) parallelTest() error {
 		t.w.Add(1)
 		go func(key int) {
 			defer t.w.Done()
-			t.Get(fmt.Sprintf("%d", key))
-
+			err := t.Get(fmt.Sprintf("%d", key))
+			if err != nil {
+				fmt.Println(err)
+			}
 		}(i)
 	}
 	t.w.Wait()

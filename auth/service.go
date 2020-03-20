@@ -8,8 +8,8 @@ import (
 	"path"
 
 	"github.com/dgrijalva/jwt-go"
-	"github.com/sirupsen/logrus"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/sirupsen/logrus"
 )
 
 func (s *Server) start() error {
