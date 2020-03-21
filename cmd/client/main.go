@@ -14,8 +14,6 @@ import (
 	"strconv"
 
 	"github.com/natefinch/atomic"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
@@ -84,6 +82,7 @@ var (
 	errorReadObjectFile = errors.New("read object file failed")
 	errorPutObjectFile  = errors.New("put object file failed")
 	errorExecuteRequest = errors.New("execute http request failed")
+	errorNotImplemented = errors.New("method not implemented")
 )
 
 func handle(client *http.Client, cmd string, token string) (*Response, error) {
@@ -277,7 +276,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		request.Header.Add("role", strconv.Itoa(*createUserFlagRole))
 
 	default:
-		return nil, status.Error(codes.Unimplemented, "method not implemented")
+		return nil, errorNotImplemented
 	}
 
 	request.Header.Add("token", token)
@@ -287,31 +286,34 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	}
 	defer response.Body.Close()
 	r := &Response{code: response.StatusCode}
-	if getFile {
+	if getFile && response.StatusCode == http.StatusOK {
 		path := *getObjectFlagKey
-		if response.StatusCode == http.StatusOK {
-			for {
-				bytes := make([]byte, global.MaxChunkSize)
-				count, err := response.Body.Read(bytes)
-				if err == io.EOF {
-					if count != 0 {
-						err = saveFile(bytes[:count], path)
-						if err != nil {
-							return nil, err
-						}
+		for {
+			bytes := make([]byte, global.MaxChunkSize)
+			count, err := response.Body.Read(bytes)
+			if err == io.EOF {
+				if count != 0 {
+					err = saveFile(bytes[:count], path)
+					if err != nil {
+						return nil, err
 					}
-					break
 				}
-				err = saveFile(bytes[:count], path)
-				if err != nil {
-					return nil, err
-				}
+				break
 			}
-			r.body = fmt.Sprintf("The file has been saved to file %s", path)
-		} else if response.StatusCode == http.StatusForbidden {
-			r.code = http.StatusOK
-			r.body = fmt.Sprintf("The file %s already exists.", path)
+			err = saveFile(bytes[:count], path)
+			if err != nil {
+				return nil, err
+			}
 		}
+		r.body = fmt.Sprintf("The file has been saved to file %s.", path)
+		return r, nil
+	}
+	if hasToken && response.StatusCode == http.StatusOK {
+		err = saveToken(r.body)
+		if err != nil {
+			return nil, err
+		}
+		r.body = "OK"
 		return r, nil
 	}
 	bytes, err := ioutil.ReadAll(response.Body)
@@ -319,13 +321,6 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		return nil, errorReadResponse
 	}
 	r.body = string(bytes)
-	if hasToken && response.StatusCode == http.StatusOK {
-		err = saveToken(r.body)
-		if err != nil {
-			return nil, err
-		}
-		r.body = "OK"
-	}
 	return r, nil
 }
 
