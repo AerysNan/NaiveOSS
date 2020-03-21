@@ -3,141 +3,142 @@ package metadata
 import "sync"
 
 type RBTreeNode struct {
-	key   string
-	value interface{}
-	l     *RBTreeNode
-	r     *RBTreeNode
-	red   bool
-	size  int
+	Key string
+	// cannot use interface{} here, or it will be unmarshalled into map[string]interface{}
+	Value *Entry
+	L     *RBTreeNode
+	R     *RBTreeNode
+	Red   bool
+	Size  int
 }
 
 type RBTree struct {
 	mu   sync.RWMutex
-	root *RBTreeNode
+	Root *RBTreeNode
 }
 
 func newTree() *RBTree {
 	return &RBTree{}
 }
 
-func newNode(key string, value interface{}, red bool, size int) *RBTreeNode {
+func newNode(key string, value *Entry, red bool, size int) *RBTreeNode {
 	return &RBTreeNode{
-		key:   key,
-		value: value,
-		red:   red,
-		size:  size,
+		Key:   key,
+		Value: value,
+		Red:   red,
+		Size:  size,
 	}
 }
 
-func (tree *RBTree) get(key string) (interface{}, bool) {
+func (tree *RBTree) get(key string) (*Entry, bool) {
 	tree.mu.RLock()
 	defer tree.mu.RUnlock()
-	return tree.search(tree.root, key)
+	return tree.search(tree.Root, key)
 }
 
-func (tree *RBTree) search(node *RBTreeNode, key string) (interface{}, bool) {
+func (tree *RBTree) search(node *RBTreeNode, key string) (*Entry, bool) {
 	if node == nil {
 		return nil, false
 	}
-	if node.key == key {
-		return node.value, true
+	if node.Key == key {
+		return node.Value, true
 	}
-	if node.key > key {
-		return tree.search(node.l, key)
+	if node.Key > key {
+		return tree.search(node.L, key)
 	}
-	return tree.search(node.r, key)
+	return tree.search(node.R, key)
 }
 
-func (tree *RBTree) put(key string, value interface{}) {
+func (tree *RBTree) put(key string, value *Entry) {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
-	tree.root = tree.insert(tree.root, key, value)
-	tree.root.red = false
+	tree.Root = tree.insert(tree.Root, key, value)
+	tree.Root.Red = false
 }
 
-func (tree *RBTree) insert(node *RBTreeNode, key string, value interface{}) *RBTreeNode {
+func (tree *RBTree) insert(node *RBTreeNode, key string, value *Entry) *RBTreeNode {
 	if node == nil {
 		return newNode(key, value, true, 1)
 	}
-	if node.key == key {
-		node.value = value
-	} else if node.key > key {
-		node.l = tree.insert(node.l, key, value)
+	if node.Key == key {
+		node.Value = value
+	} else if node.Key > key {
+		node.L = tree.insert(node.L, key, value)
 	} else {
-		node.r = tree.insert(node.r, key, value)
+		node.R = tree.insert(node.R, key, value)
 	}
 	// rotate to keep balance
-	if !tree.isRed(node.l) && tree.isRed(node.r) {
+	if !tree.isRed(node.L) && tree.isRed(node.R) {
 		node = tree.rotateL(node)
 	}
-	if tree.isRed(node.l) && tree.isRed(node.l.l) {
+	if tree.isRed(node.L) && tree.isRed(node.L.L) {
 		node = tree.rotateR(node)
 	}
-	if tree.isRed(node.l) && tree.isRed(node.r) {
+	if tree.isRed(node.L) && tree.isRed(node.R) {
 		tree.recolor(node)
 	}
-	node.size = tree.sizeNode(node.l) + tree.sizeNode(node.r) + 1
+	node.Size = tree.sizeNode(node.L) + tree.sizeNode(node.R) + 1
 	return node
 }
 
 func (tree *RBTree) isRed(node *RBTreeNode) bool {
-	return node != nil && node.red
+	return node != nil && node.Red
 }
 
 func (tree *RBTree) size() int {
-	return tree.sizeNode(tree.root)
+	return tree.sizeNode(tree.Root)
 }
 
 func (tree *RBTree) sizeNode(node *RBTreeNode) int {
 	if node == nil {
 		return 0
 	}
-	return node.size
+	return node.Size
 }
 
 func (tree *RBTree) rotateL(node *RBTreeNode) *RBTreeNode {
-	if node == nil || node.r == nil {
+	if node == nil || node.R == nil {
 		return node
 	}
-	x := node.r
-	node.r = x.l
-	x.l = node
-	x.red = node.red
-	node.red = true
-	x.size = node.size
-	node.size = tree.sizeNode(node.l) + tree.sizeNode(node.r) + 1
+	x := node.R
+	node.R = x.L
+	x.L = node
+	x.Red = node.Red
+	node.Red = true
+	x.Size = node.Size
+	node.Size = tree.sizeNode(node.L) + tree.sizeNode(node.R) + 1
 	return x
 }
 
 func (tree *RBTree) rotateR(node *RBTreeNode) *RBTreeNode {
-	if node == nil || node.l == nil {
+	if node == nil || node.L == nil {
 		return node
 	}
-	x := node.l
-	node.l = x.r
-	x.r = node
-	x.red = node.red
-	node.red = true
-	x.size = node.size
-	node.size = tree.sizeNode(node.l) + tree.sizeNode(node.r) + 1
+	x := node.L
+	node.L = x.R
+	x.R = node
+	x.Red = node.Red
+	node.Red = true
+	x.Size = node.Size
+	node.Size = tree.sizeNode(node.L) + tree.sizeNode(node.R) + 1
 	return x
 }
 
 func (tree *RBTree) recolor(node *RBTreeNode) {
-	if node == nil || node.l == nil || node.r == nil {
+	if node == nil || node.L == nil || node.R == nil {
 		return
 	}
-	node.red = !node.red
-	node.l.red = !node.l.red
-	node.r.red = !node.r.red
+	node.Red = !node.Red
+	node.L.Red = !node.L.Red
+	node.R.Red = !node.R.Red
 }
 
 func (tree *RBTree) isBalanceNode(node *RBTreeNode) (int, bool) {
 	if node == nil {
 		return -1, true
 	}
-	heightL, balanceL := tree.isBalanceNode(node.l)
-	heightR, balanceR := tree.isBalanceNode(node.r)
+	heightL, balanceL := tree.isBalanceNode(node.L)
+	heightR, balanceR := tree.isBalanceNode(node.R)
 	if !balanceL || !balanceR {
 		return -1, false
 	}
@@ -148,6 +149,21 @@ func (tree *RBTree) isBalanceNode(node *RBTreeNode) (int, bool) {
 }
 
 func (tree *RBTree) isBalance() bool {
-	_, balance := tree.isBalanceNode(tree.root)
+	_, balance := tree.isBalanceNode(tree.Root)
 	return balance
+}
+
+func (tree *RBTree) toList() []*Entry {
+	return tree.toListNode(tree.Root)
+}
+
+func (tree *RBTree) toListNode(node *RBTreeNode) []*Entry {
+	result := make([]*Entry, 0)
+	if node == nil {
+		return result
+	}
+	result = append(result, tree.toListNode(node.L)...)
+	result = append(result, node.Value)
+	result = append(result, tree.toListNode(node.R)...)
+	return result
 }

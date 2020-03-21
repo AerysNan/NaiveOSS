@@ -26,14 +26,14 @@ func TestRBTreePutThenGet(t *testing.T) {
 	for i := 0; i < n; i++ {
 		k := strconv.Itoa(i)
 		v := randstring(20)
-		tree.put(k, v)
+		tree.put(k, &Entry{Key: v})
 		m[k] = v
 	}
 	assert.Equal(len(m), tree.size(), "Size of red-black tree index and hash index shouldbe the same.")
 	for k, v := range m {
 		actual, ok := tree.get(k)
 		assert.True(ok, "Red-black tree index shoud return an inserted value.")
-		assert.Equal(v, actual.(string), "Red-black tree index and hash index should return the same value.")
+		assert.Equal(v, actual.Key, "Red-black tree index and hash index should return the same value.")
 	}
 	t.Log("Passed.")
 }
@@ -53,7 +53,7 @@ func TestBRTreeConcurrentPutAndGet(t *testing.T) {
 			for j := 0; j < n; j++ {
 				k := strconv.Itoa(group*n + j)
 				v := randstring(20)
-				tree.put(k, v)
+				tree.put(k, &Entry{Key: v})
 				m.Store(k, v)
 			}
 		}(i)
@@ -62,7 +62,7 @@ func TestBRTreeConcurrentPutAndGet(t *testing.T) {
 	m.Range(func(k interface{}, v interface{}) bool {
 		actual, ok := tree.get(k.(string))
 		assert.True(ok, "Red-black tree index shoud return an inserted value.")
-		assert.Equal(v.(string), actual.(string), "Red-black tree index and hash index should return the same value.")
+		assert.Equal(v.(string), actual.Key, "Red-black tree index and hash index should return the same value.")
 		return true
 	})
 	t.Log("Passed.")
@@ -74,7 +74,7 @@ func TestRBTreeBalance(t *testing.T) {
 	tree := newTree()
 	n := 100000
 	for i := 0; i < n; i++ {
-		tree.put(strconv.Itoa(i), randstring(20))
+		tree.put(strconv.Itoa(i), &Entry{Key: randstring(20)})
 	}
 	assert.True(tree.isBalance())
 	t.Log("Passed.")

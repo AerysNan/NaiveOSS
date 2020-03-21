@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
-	"sort"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -24,21 +23,6 @@ type Entry struct {
 	Size       int64
 	CreateTime int64
 	Delete     bool
-}
-
-// EntryList represents a list of entries
-type EntryList []*Entry
-
-func (l EntryList) Len() int {
-	return len(l)
-}
-
-func (l EntryList) Less(i int, j int) bool {
-	return l[i].Key < l[j].Key
-}
-
-func (l EntryList) Swap(i int, j int) {
-	l[i], l[j] = l[j], l[i]
 }
 
 // EntryMeta is a reduced version of entry for tag map
@@ -60,27 +44,27 @@ type Layer struct {
 // Bucket is a struct that ensembles a namespace
 type Bucket struct {
 	m          sync.RWMutex
-	root       string
-	Name       string            // bucket name
-	MemoMap    map[string]*Entry // key -> entry
-	SSTable    []*Layer          // read only layer list
-	MemoSize   int64             // size of mempmap
-	CreateTime int64             // create timestamp
+	Root       string
+	Name       string   // bucket name
+	MemoTree   *RBTree  // key -> entry
+	SSTable    []*Layer // read only layer list
+	MemoSize   int64    // size of mempmap
+	CreateTime int64    // create timestamp
 }
 
 func (b *Bucket) rotate() ([]string, error) {
-	entryList := make(EntryList, 0)
+	entryList := make([]*Entry, 0)
 	volumeSet := make(map[string]struct{})
-	for _, v := range b.MemoMap {
-		entryList = append(entryList, v)
-		volumeSet[fmt.Sprintf("%v-%v", v.Volume, v.Address)] = struct{}{}
+	entries := b.MemoTree.toList()
+	for _, entry := range entries {
+		entryList = append(entryList, entry)
+		volumeSet[fmt.Sprintf("%v-%v", entry.Volume, entry.Address)] = struct{}{}
 	}
 	volumes := make([]string, 0)
 	for volume := range volumeSet {
 		volumes = append(volumes, volume)
 	}
-	b.MemoMap = make(map[string]*Entry)
-	sort.Sort(entryList)
+	b.MemoTree = new(RBTree)
 	err := b.writeLayer(entryList, volumes, len(b.SSTable), len(b.SSTable))
 	if err != nil {
 		return nil, err
@@ -89,7 +73,7 @@ func (b *Bucket) rotate() ([]string, error) {
 }
 
 func (b *Bucket) deleteLayer(name string) {
-	err := os.Remove(path.Join(b.root, name))
+	err := os.Remove(path.Join(b.Root, name))
 	if err != nil {
 		logrus.WithError(err).Warn("Delete layer failed")
 	}
@@ -102,7 +86,7 @@ func (b *Bucket) writeLayer(entryList []*Entry, volumes []string, begin int, end
 		return status.Error(codes.Internal, "marshal JSON failed")
 	}
 	name := fmt.Sprintf("%v-%v-%v", b.Name, begin, end)
-	file, err := os.Create(path.Join(b.root, name))
+	file, err := os.Create(path.Join(b.Root, name))
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Create layer file failed")
 		return status.Error(codes.Internal, "create layer file failed")
@@ -125,9 +109,9 @@ func (b *Bucket) writeLayer(entryList []*Entry, volumes []string, begin int, end
 }
 
 func (b *Bucket) readLayer(name string) ([]*Entry, error) {
-	file, err := os.Open(path.Join(b.root, name))
+	file, err := os.Open(path.Join(b.Root, name))
 	if err != nil {
-		logrus.Warnf("Open file %v failed", name)
+		logrus.WithError(err).Warnf("Open file %v failed", path.Join(b.Root, name))
 		return nil, err
 	}
 	defer file.Close()

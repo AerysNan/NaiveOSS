@@ -284,7 +284,7 @@ func (s *Server) gcLoop() {
 			fmt.Sscanf(volume, "%v-%v", &volumeID, &address)
 			found := func() bool {
 				for _, bucket := range s.Bucket {
-					for _, entry := range bucket.MemoMap {
+					for _, entry := range bucket.MemoTree.toList() {
 						if entry.Address == address && entry.Volume == volumeID {
 							return true
 						}
@@ -322,7 +322,7 @@ func (s *Server) gcLoop() {
 }
 
 func (s *Server) searchEntry(bucket *Bucket, key string) (*Entry, error) {
-	entry, ok := bucket.MemoMap[key]
+	entry, ok := bucket.MemoTree.get(key)
 	if ok {
 		return entry, nil
 	}
@@ -380,9 +380,9 @@ func (s *Server) CreateBucket(ctx context.Context, request *pm.CreateBucketReque
 	logrus.WithField("bucket", bucketName).Debug("Create new bucket")
 	bucket := &Bucket{
 		m:          sync.RWMutex{},
-		root:       s.Root,
+		Root:       s.Root,
 		Name:       bucketName,
-		MemoMap:    make(map[string]*Entry),
+		MemoTree:   new(RBTree),
 		SSTable:    make([]*Layer, 0),
 		MemoSize:   0,
 		CreateTime: time.Now().Unix(),
@@ -404,7 +404,7 @@ func (s *Server) DeleteBucket(ctx context.Context, request *pm.DeleteBucketReque
 	for _, layer := range b.SSTable {
 		s.ref[layer.Name]--
 		name := fmt.Sprintf("%v-%v-%v", b.Name, layer.Begin, layer.End)
-		err := os.Remove(path.Join(b.root, name))
+		err := os.Remove(path.Join(b.Root, name))
 		if err != nil {
 			logrus.WithField("bucket", bucketName).Error("delete layer file failed")
 		}
@@ -435,8 +435,8 @@ func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*
 			CreateTime: time.Now().Unix(),
 			Delete:     false,
 		}
-		bucket.MemoMap[request.Key] = entry
-		if len(bucket.MemoMap) >= s.config.LayerKeyThreshold {
+		bucket.MemoTree.put(request.Key, entry)
+		if bucket.MemoTree.size() >= s.config.LayerKeyThreshold {
 			volumes, err := bucket.rotate()
 			if err != nil {
 				return nil, err
@@ -491,7 +491,7 @@ func (s *Server) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.P
 		CreateTime: time.Now().Unix(),
 	}
 
-	bucket.MemoMap[request.Key] = entry
+	bucket.MemoTree.put(request.Key, entry)
 	bucket.MemoSize += request.Size
 	s.TagMap[request.Tag] = &EntryMeta{
 		Address: request.Address,
@@ -499,7 +499,7 @@ func (s *Server) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.P
 		Offset:  request.Offset,
 		Size:    request.Size,
 	}
-	if len(bucket.MemoMap) >= s.config.LayerKeyThreshold {
+	if bucket.MemoTree.size() >= s.config.LayerKeyThreshold {
 		volumes, err := bucket.rotate()
 		if err != nil {
 			return nil, err
@@ -557,12 +557,12 @@ func (s *Server) DeleteMeta(ctx context.Context, request *pm.DeleteMetaRequest) 
 	if entry == nil || entry.Delete {
 		return nil, status.Error(codes.NotFound, "object metadata not found")
 	}
-	_, ok = bucket.MemoMap[request.Key]
+	e, ok := bucket.MemoTree.get(request.Key)
 	if ok {
-		bucket.MemoMap[request.Key].Delete = true
+		e.Delete = true
 	} else {
-		bucket.MemoMap[request.Key] = entry
 		entry.Delete = true
+		bucket.MemoTree.put(request.Key, entry)
 	}
 	return &pm.DeleteMetaResponse{}, nil
 }
