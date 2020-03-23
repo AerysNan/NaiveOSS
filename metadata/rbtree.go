@@ -167,3 +167,20 @@ func (tree *RBTree) toListNode(node *RBTreeNode) []*Entry {
 	result = append(result, tree.toListNode(node.R)...)
 	return result
 }
+
+func (tree *RBTree) getRange(from string, to string) []*Entry {
+	return tree.getRangeNode(tree.Root, from, to)
+}
+
+func (tree *RBTree) getRangeNode(node *RBTreeNode, from string, to string) []*Entry {
+	if node == nil {
+		return nil
+	}
+	if node.Key > to {
+		return tree.getRangeNode(node.L, from, to)
+	}
+	if node.Key < from {
+		return tree.getRangeNode(node.R, from, to)
+	}
+	return append(append(tree.getRangeNode(node.L, from, to), node.Value), tree.getRangeNode(node.R, from, to)...)
+}

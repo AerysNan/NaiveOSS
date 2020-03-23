@@ -12,6 +12,7 @@ message HeartbeatResponse {}
 service MetadataForProxy {
   rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}
   rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse) {}
+  rpc RangeObject(RangeObjectRequest) returns (RangeObjectResponse) {}
   rpc CheckMeta(CheckMetaRequest) returns (CheckMetaResponse) {}
   rpc PutMeta(PutMetaRequest) returns (PutMetaResponse) {}
   rpc GetMeta(GetMetaRequest) returns (GetMetaResponse) {}
@@ -25,6 +26,14 @@ message CreateBucketResponse {}
 message DeleteBucketRequest { string bucket = 1; }
 
 message DeleteBucketResponse {}
+
+message RangeObjectRequest {
+  string bucket = 1;
+  string from = 2;
+  string to = 3;
+}
+
+message RangeObjectResponse { repeated string key = 1; }
 
 message CheckMetaRequest {
   string bucket = 1;

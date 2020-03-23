@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -394,6 +395,34 @@ func (s *Server) getObjectMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, []byte(response.String()))
+}
+
+func (s *Server) rangeObject(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket", "from", "to", "token"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	bucket, from, to, token := p["bucket"], p["from"], p["to"], p["token"]
+	_, err = s.authClient.Check(context.Background(), &pa.CheckRequest{
+		Token:      token,
+		Bucket:     bucket,
+		Permission: global.PermissionRead,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	response, err := s.metaClient.RangeObject(context.Background(), &pm.RangeObjectRequest{
+		Bucket: bucket,
+		From:   from,
+		To:     to,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResponse(w, []byte(fmt.Sprintf("%v", response.Key)))
 }
 
 func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {

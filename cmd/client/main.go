@@ -37,6 +37,11 @@ var (
 	getObjectFlagBucket = getObject.Flag("bucket", "Bucket name").Short('b').Required().String()
 	getObjectFlagKey    = getObject.Flag("key", "Key name").Short('k').Required().String()
 
+	rangeObject            = app.Command("range", "List a range of keys from oss")
+	rangeObjectFlagBucket  = rangeObject.Flag("bucket", "Bucket name").Short('b').Required().String()
+	rangeObjectFlagFromKey = rangeObject.Flag("from", "Key range lower bound").Short('l').Required().String()
+	rangeObjectFlagToKey   = rangeObject.Flag("to", "Key range higher bound").Short('r').Required().String()
+
 	putObject           = app.Command("put", "Put object to oss")
 	putObjectFlagBucket = putObject.Flag("bucket", "Bucket name").Short('b').Required().String()
 	putObjectFlagKey    = putObject.Flag("key", "Key name").Short('k').Required().String()
@@ -256,6 +261,15 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		}
 		request.Header.Add("bucket", *getMetaFlagBucket)
 		request.Header.Add("key", *getMetaFlagKey)
+
+	case rangeObject.FullCommand():
+		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/metadata"), nil)
+		if err != nil {
+			return nil, errorBuildRequest
+		}
+		request.Header.Add("bucket", *rangeObjectFlagBucket)
+		request.Header.Add("from", *rangeObjectFlagFromKey)
+		request.Header.Add("to", *rangeObjectFlagToKey)
 
 	case grantUser.FullCommand():
 		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/auth"), nil)

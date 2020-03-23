@@ -330,7 +330,7 @@ func (s *Server) searchEntry(bucket *Bucket, key string) (*Entry, error) {
 		layer := bucket.SSTable[i]
 		entryList, err := bucket.readLayer(layer.Name)
 		if err != nil {
-			logrus.Errorf("Get layer %v content failed", layer.Name)
+			logrus.WithError(err).Errorf("Get layer %v content failed", layer.Name)
 			return nil, err
 		}
 		l, h := 0, len(entryList)-1
@@ -536,6 +536,41 @@ func (s *Server) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.G
 		Offset:     int64(entry.Offset),
 		Size:       int64(entry.Size),
 		CreateTime: int64(entry.CreateTime),
+	}, nil
+}
+
+func (s *Server) RangeObject(ctx context.Context, request *pm.RangeObjectRequest) (*pm.RangeObjectResponse, error) {
+	s.m.RLock()
+	bucket, ok := s.Bucket[request.Bucket]
+	if !ok {
+		s.m.RUnlock()
+		return nil, status.Error(codes.NotFound, "bucket not exist")
+	}
+	bucket.m.RLock()
+	defer bucket.m.RUnlock()
+	s.m.RUnlock()
+	entryMatrix := make([][]*Entry, 0)
+	for _, layer := range bucket.SSTable {
+		entries, err := bucket.readLayer(layer.Name)
+		if err != nil {
+			logrus.WithError(err).Errorf("Range layer %v failed", layer.Name)
+			return nil, err
+		}
+		slice := entrySliceRange(entries, request.From, request.To)
+		if len(slice) > 0 {
+			entryMatrix = append(entryMatrix, slice)
+		}
+	}
+	slice := bucket.MemoTree.getRange(request.From, request.To)
+	if len(slice) > 0 {
+		entryMatrix = append(entryMatrix, slice)
+	}
+	keys := make([]string, 0)
+	for _, entry := range mergeEntryMatrix(entryMatrix) {
+		keys = append(keys, entry.Key)
+	}
+	return &pm.RangeObjectResponse{
+		Key: keys,
 	}, nil
 }
 

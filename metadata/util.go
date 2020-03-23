@@ -28,3 +28,42 @@ func mergeEntryMatrix(entryMatrix [][]*Entry) []*Entry {
 	}
 	return result
 }
+
+func entrySliceRange(list []*Entry, from string, to string) []*Entry {
+	if len(list) == 0 || from > to || list[0].Key > to || list[len(list)-1].Key < from {
+		return nil
+	}
+	var L, R int
+	if from < list[0].Key {
+		L = 0
+	} else {
+		l, r := 0, len(list)-1
+		for l < r {
+			mid := (l + r) / 2
+			if list[mid].Key < from {
+				l = mid + 1
+			} else {
+				r = mid
+			}
+		}
+		L = l
+	}
+	if to > list[len(list)-1].Key {
+		R = len(list) - 1
+	} else {
+		l, r := 0, len(list)-1
+		for l < r {
+			mid := (l + r + 1) / 2
+			if list[mid].Key > to {
+				r = mid - 1
+			} else {
+				l = mid
+			}
+		}
+		R = l
+	}
+	if L > R || L < 0 || L >= len(list) || R < 0 || R >= len(list) {
+		return nil
+	}
+	return list[L : R+1]
+}

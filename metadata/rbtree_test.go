@@ -3,6 +3,7 @@ package metadata
 import (
 	crand "crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -74,8 +75,21 @@ func TestRBTreeBalance(t *testing.T) {
 	tree := newTree()
 	n := 100000
 	for i := 0; i < n; i++ {
-		tree.put(strconv.Itoa(i), &Entry{Key: randstring(20)})
+		tree.put(strconv.Itoa(i), nil)
 	}
 	assert.True(tree.isBalance())
 	t.Log("Passed.")
+}
+
+func TestRBTreeRange(t *testing.T) {
+	t.Log("Running TestRBTreeBalance...")
+	assert := assert.New(t)
+	tree := newTree()
+	n := 100000
+	for i := 0; i < n; i++ {
+		tree.put(fmt.Sprintf("%06d", i), nil)
+	}
+	assert.Equal(10001, len(tree.getRange("010000", "020000")), "Key from 10000 to 20000 should have 10001 entries")
+	assert.Equal(10001, len(tree.getRange("#", "010000")), "Key from # to 20000 should have 10001 entries")
+	assert.Equal(10000, len(tree.getRange("090000", "?")), "Key from 90000 to ? should have 10000 entries")
 }
