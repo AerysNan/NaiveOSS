@@ -15,6 +15,7 @@ import (
 
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
+	"oss/raft"
 
 	"github.com/klauspost/reedsolomon"
 	"github.com/natefinch/atomic"
@@ -44,6 +45,7 @@ type Server struct {
 	metadataClient pm.MetadataForStorageClient
 
 	m             sync.RWMutex
+	rf            *raft.Raft
 	config        *Config
 	Address       string `json:"-"`
 	Root          string `json:"-"`

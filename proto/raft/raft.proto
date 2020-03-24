@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package pr;
+
+service Raft {
+  rpc Vote(VoteRequest) returns (VoteResponse) {}
+  rpc Append(AppendRequest) returns (AppendResponse) {}
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse) {}
+}
+
+message VoteRequest {
+  int64 term = 1;
+  int64 candidate_id = 2;
+  int64 last_log_index = 3;
+  int64 last_log_term = 4;
+}
+
+message VoteResponse {
+  int64 term = 1;
+  bool vote_granted = 2;
+}
+
+message AppendRequest {
+  int64 term = 1;
+  int64 leader_id = 2;
+  int64 prev_log_term = 3;
+  int64 prev_log_index = 4;
+  int64 leader_commit = 5;
+  repeated LogEntry entries = 6;
+}
+
+message AppendResponse {
+  int64 term = 1;
+  int64 conflict_term = 2;
+  int64 conflict_index = 3;
+  bool success = 4;
+}
+
+message SnapshotRequest {
+  int64 term = 1;
+  int64 leader_id = 2;
+  int64 last_included_index = 3;
+  int64 last_included_term = 4;
+  bytes data = 5;
+}
+
+message SnapshotResponse { int64 term = 1; }
+
+message Op {
+  Type type = 1;
+  int64 client_id = 2;
+  int64 command_id = 3;
+  bytes args = 4;
+}
+
+enum Type {
+  SNAPSHOT = 0;
+  PUT = 1;
+}
+
+message Message {
+  Op command = 1;
+  bool command_valid = 2;
+  int64 command_index = 3;
+}
+
+message LogEntry {
+  Op command = 1;
+  int64 term = 2;
+}
