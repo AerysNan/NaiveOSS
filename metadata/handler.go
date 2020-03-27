@@ -26,6 +26,7 @@ import (
 type Config struct {
 	DumpFileName       string
 	LayerKeyThreshold  int
+	CompactThreshold   int
 	TrashRateThreshold float64
 	DumpTimeout        time.Duration
 	HeartbeatTimeout   time.Duration
@@ -93,13 +94,108 @@ func (s *Server) recover() {
 	}
 	for _, bucket := range s.Bucket {
 		bucket.m = sync.RWMutex{}
-		for _, layer := range bucket.SSTable {
-			for _, volume := range layer.Volumes {
-				logrus.WithField("action", "recover").Debugf("Reference increase on volume %v", volume)
-				s.ref[volume]++
+		for _, level := range bucket.SSTable.Layers {
+			for _, layer := range level {
+				for _, volume := range layer.Volumes {
+					logrus.WithField("action", "recover").Debugf("Reference increase on volume %v", volume)
+					s.ref[volume]++
+				}
 			}
 		}
 	}
+}
+
+func (s *Server) recursiveCompact(b *Bucket, level int) {
+	b.m.Lock()
+	if len(b.SSTable.Layers[level]) <= s.config.CompactThreshold {
+		b.m.Unlock()
+		return
+	}
+	logrus.WithField("bucket", b.Name).Debugf("Perform compact on level %v", level)
+	entries, err := b.mergeLayers(b.SSTable.Layers[level])
+	if err != nil {
+		logrus.WithError(err).Error("Merge layers failed")
+		b.m.Unlock()
+		return
+	}
+	v2Size := make(map[string]int64)
+	for _, entry := range entries {
+		key := fmt.Sprintf("%v-%v", entry.Volume, entry.Address)
+		v2Size[key] += entry.Size
+	}
+	layers := [][]*Entry{entries}
+	for key, size := range v2Size {
+		var address string
+		var volumeID int64
+		fmt.Sscanf(key, "%v-%v", &volumeID, &address)
+		client, ok := s.storageClients[address]
+		if !ok {
+			logrus.WithField("address", address).Error("Storage client not found")
+			b.m.Unlock()
+			return
+		}
+		state, err := client.State(context.Background(), &ps.StateRequest{
+			VolumeId: volumeID,
+		})
+		if err != nil {
+			logrus.WithError(err).Error("Get volume state failed")
+			b.m.Unlock()
+			return
+		}
+		trashRate := 1.0 - float64(size)/float64(state.Size)
+
+		if trashRate > s.config.TrashRateThreshold {
+			logrus.WithField("volume", key).Debugf("Trashrate threshold exceeded, content %v, actual %v", size, state.Size)
+			newEntries, err := s.compress(address, volumeID, entries)
+			if err == nil {
+				logrus.Debug("Compress volume succeeded")
+				layers = append(layers, newEntries)
+			} else {
+				logrus.WithError(err).Error("Compress volume failed")
+				b.m.Unlock()
+				return
+			}
+		}
+	}
+	entries = mergeEntryMatrix(layers)
+	set := make(map[string]struct{})
+	for _, entry := range entries {
+		set[fmt.Sprintf("%v-%v", entry.Volume, entry.Address)] = struct{}{}
+	}
+	volumeIDs := make([]string, 0)
+	for volumeID := range set {
+		volumeIDs = append(volumeIDs, volumeID)
+	}
+	begin := b.SSTable.Layers[level][0].Begin
+	end := b.SSTable.Layers[level][len(b.SSTable.Layers[level])-1].End
+	compactedLayer := &Layer{
+		Name:    fmt.Sprintf("%v-%v-%v", b.Name, begin, end),
+		Volumes: volumeIDs,
+		Begin:   begin,
+		End:     end,
+	}
+	for _, layer := range b.SSTable.Layers[level] {
+		b.deleteLayer(layer.Name)
+		for _, volume := range layer.Volumes {
+			logrus.WithField("action", "delete").Debugf("Reference decrease on volume %v", volume)
+			s.ref[volume]--
+		}
+	}
+	b.SSTable.clearLevel(level)
+	layer, err := b.writeLayer(entries, volumeIDs, compactedLayer.Begin, compactedLayer.End)
+	b.SSTable.pushLayer(layer, level+1)
+	logrus.WithField("bucket", b.Name).Debugf("Push layer %v to level %v", layer.Name, level+1)
+	for _, volumeID := range volumeIDs {
+		logrus.WithField("action", "compact").Debugf("Referenece increase on volume %v", volumeID)
+		s.ref[volumeID]++
+	}
+	if err != nil {
+		logrus.WithError(err).Error("Write layer failed")
+		b.m.Unlock()
+		return
+	}
+	b.m.Unlock()
+	s.recursiveCompact(b, level+1)
 }
 
 func (s *Server) compactLoop() {
@@ -111,82 +207,7 @@ func (s *Server) compactLoop() {
 		for _, bucket := range s.Bucket {
 			go func(b *Bucket) {
 				defer wg.Done()
-				if len(b.SSTable) <= 1 {
-					return
-				}
-				logrus.WithField("bucket", b.Name).Debug("Perform compact")
-				entries, err := b.mergeLayers(b.SSTable)
-				if err != nil {
-					logrus.WithError(err).Error("Merge layers failed")
-					return
-				}
-				v2Size := make(map[string]int64)
-				for _, entry := range entries {
-					key := fmt.Sprintf("%v-%v", entry.Volume, entry.Address)
-					v2Size[key] += entry.Size
-				}
-				layers := [][]*Entry{entries}
-				for key, size := range v2Size {
-					var address string
-					var volumeID int64
-					fmt.Sscanf(key, "%v-%v", &volumeID, &address)
-					client, ok := s.storageClients[address]
-					if !ok {
-						logrus.WithField("address", address).Error("Storage client not found")
-						return
-					}
-					state, err := client.State(context.Background(), &ps.StateRequest{
-						VolumeId: volumeID,
-					})
-					if err != nil {
-						logrus.WithError(err).Error("Get volume state failed")
-						return
-					}
-					trashRate := 1.0 - float64(size)/float64(state.Size)
-					if trashRate > s.config.TrashRateThreshold {
-						logrus.Debugf("Trashrate threshold exceeded, content %v, actual %v", size, state.Size)
-						newEntries, err := s.compress(address, volumeID, entries)
-						if err == nil {
-							logrus.Debug("Compress volume succeeded")
-							layers = append(layers, newEntries)
-						} else {
-							logrus.WithError(err).Error("Compress volume failed")
-							return
-						}
-					}
-				}
-				entries = mergeEntryMatrix(layers)
-				set := make(map[string]struct{})
-				for _, entry := range entries {
-					set[fmt.Sprintf("%v-%v", entry.Volume, entry.Address)] = struct{}{}
-				}
-				volumeIDs := make([]string, 0)
-				for volumeID := range set {
-					volumeIDs = append(volumeIDs, volumeID)
-				}
-				compactedLayer := &Layer{
-					Name:    fmt.Sprintf("%v-%v-%v", b.Name, b.SSTable[0].Begin, b.SSTable[len(b.SSTable)-1].End),
-					Volumes: volumeIDs,
-					Begin:   b.SSTable[0].Begin,
-					End:     b.SSTable[len(b.SSTable)-1].End,
-				}
-				for _, layer := range b.SSTable {
-					b.deleteLayer(layer.Name)
-					for _, volume := range layer.Volumes {
-						logrus.WithField("action", "delete").Debugf("Reference decrease on volume %v", volume)
-						s.ref[volume]--
-					}
-				}
-				b.SSTable = []*Layer{}
-				err = b.writeLayer(entries, volumeIDs, compactedLayer.Begin, compactedLayer.End)
-				for _, volumeID := range volumeIDs {
-					logrus.WithField("action", "compact").Debugf("Referenece increase on volume %v", volumeID)
-					s.ref[volumeID]++
-				}
-				if err != nil {
-					logrus.WithError(err).Error("Write layer failed")
-					return
-				}
+				s.recursiveCompact(b, 0)
 			}(bucket)
 		}
 		s.m.Unlock()
@@ -326,22 +347,24 @@ func (s *Server) searchEntry(bucket *Bucket, key string) (*Entry, error) {
 	if ok {
 		return entry, nil
 	}
-	for i := len(bucket.SSTable) - 1; i >= 0; i-- {
-		layer := bucket.SSTable[i]
-		entryList, err := bucket.readLayer(layer.Name)
-		if err != nil {
-			logrus.WithError(err).Errorf("Get layer %v content failed", layer.Name)
-			return nil, err
-		}
-		l, h := 0, len(entryList)-1
-		for l <= h {
-			m := l + (h-l)/2
-			if entryList[m].Key == key {
-				return entryList[m], nil
-			} else if entryList[m].Key > key {
-				h = m - 1
-			} else {
-				l = m + 1
+	for _, level := range bucket.SSTable.Layers {
+		for i := len(level) - 1; i >= 0; i-- {
+			layer := level[i]
+			entryList, err := bucket.readLayer(layer.Name)
+			if err != nil {
+				logrus.WithError(err).Errorf("Get layer %v content failed", layer.Name)
+				return nil, err
+			}
+			l, h := 0, len(entryList)-1
+			for l <= h {
+				m := l + (h-l)/2
+				if entryList[m].Key == key {
+					return entryList[m], nil
+				} else if entryList[m].Key > key {
+					h = m - 1
+				} else {
+					l = m + 1
+				}
 			}
 		}
 	}
@@ -383,7 +406,7 @@ func (s *Server) CreateBucket(ctx context.Context, request *pm.CreateBucketReque
 		Root:       s.Root,
 		Name:       bucketName,
 		MemoTree:   new(RBTree),
-		SSTable:    make([]*Layer, 0),
+		SSTable:    newLSTM(),
 		MemoSize:   0,
 		CreateTime: time.Now().Unix(),
 	}
@@ -401,12 +424,14 @@ func (s *Server) DeleteBucket(ctx context.Context, request *pm.DeleteBucketReque
 		return nil, status.Error(codes.NotFound, "bucket not found")
 	}
 	logrus.WithField("bucket", bucketName).Debug("Delete bucket")
-	for _, layer := range b.SSTable {
-		s.ref[layer.Name]--
-		name := fmt.Sprintf("%v-%v-%v", b.Name, layer.Begin, layer.End)
-		err := os.Remove(path.Join(b.Root, name))
-		if err != nil {
-			logrus.WithField("bucket", bucketName).Error("delete layer file failed")
+	for _, level := range b.SSTable.Layers {
+		for _, layer := range level {
+			s.ref[layer.Name]--
+			name := fmt.Sprintf("%v-%v-%v", b.Name, layer.Begin, layer.End)
+			err := os.Remove(path.Join(b.Root, name))
+			if err != nil {
+				logrus.WithField("bucket", bucketName).Error("delete layer file failed")
+			}
 		}
 	}
 
@@ -550,15 +575,17 @@ func (s *Server) RangeObject(ctx context.Context, request *pm.RangeObjectRequest
 	defer bucket.m.RUnlock()
 	s.m.RUnlock()
 	entryMatrix := make([][]*Entry, 0)
-	for _, layer := range bucket.SSTable {
-		entries, err := bucket.readLayer(layer.Name)
-		if err != nil {
-			logrus.WithError(err).Errorf("Range layer %v failed", layer.Name)
-			return nil, err
-		}
-		slice := entrySliceRange(entries, request.From, request.To)
-		if len(slice) > 0 {
-			entryMatrix = append(entryMatrix, slice)
+	for _, level := range bucket.SSTable.Layers {
+		for _, layer := range level {
+			entries, err := bucket.readLayer(layer.Name)
+			if err != nil {
+				logrus.WithError(err).Errorf("Range layer %v failed", layer.Name)
+				return nil, err
+			}
+			slice := entrySliceRange(entries, request.From, request.To)
+			if len(slice) > 0 {
+				entryMatrix = append(entryMatrix, slice)
+			}
 		}
 	}
 	slice := bucket.MemoTree.getRange(request.From, request.To)

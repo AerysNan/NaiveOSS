@@ -21,7 +21,7 @@ func randstring(n int) string {
 func TestRBTreePutThenGet(t *testing.T) {
 	t.Log("Running TestRBTreePutThenGet...")
 	assert := assert.New(t)
-	tree := newTree()
+	tree := newRBTree()
 	n := 100000
 	m := make(map[string]string)
 	for i := 0; i < n; i++ {
@@ -44,7 +44,7 @@ func TestBRTreeConcurrentPutAndGet(t *testing.T) {
 	assert := assert.New(t)
 	group := 100
 	n := 1000
-	tree := newTree()
+	tree := newRBTree()
 	m := sync.Map{}
 	waitGroup := sync.WaitGroup{}
 	waitGroup.Add(group)
@@ -72,7 +72,7 @@ func TestBRTreeConcurrentPutAndGet(t *testing.T) {
 func TestRBTreeBalance(t *testing.T) {
 	t.Log("Running TestBRTreeBalance...")
 	assert := assert.New(t)
-	tree := newTree()
+	tree := newRBTree()
 	n := 100000
 	for i := 0; i < n; i++ {
 		tree.put(strconv.Itoa(i), nil)
@@ -84,7 +84,7 @@ func TestRBTreeBalance(t *testing.T) {
 func TestRBTreeRange(t *testing.T) {
 	t.Log("Running TestRBTreeBalance...")
 	assert := assert.New(t)
-	tree := newTree()
+	tree := newRBTree()
 	n := 100000
 	for i := 0; i < n; i++ {
 		tree.put(fmt.Sprintf("%06d", i), nil)

@@ -1,4 +1,4 @@
-n = 10
+n = 26
 m = 1024
 
 all: clean protobuf binary object
@@ -33,4 +33,4 @@ docker:
 	cd cmd/auth && go build && sudo docker build . -t auth && rm auth
 
 test:
-	go run cmd/test/parallelTest.go
+	go run cmd/test/parallel.go

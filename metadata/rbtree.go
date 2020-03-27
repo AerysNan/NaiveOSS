@@ -17,7 +17,7 @@ type RBTree struct {
 	Root *RBTreeNode
 }
 
-func newTree() *RBTree {
+func newRBTree() *RBTree {
 	return &RBTree{}
 }
 

@@ -41,7 +41,7 @@ type Task struct {
 
 func newTest() *Test {
 	return &Test{
-		token:         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiYWRtaW4iLCJyb2xlIjoxfQ.BllogvCa2WOQBt11nohCLtQaMRwsPKghiBFamX0h2HI",
+		token:         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiYWRtaW4iLCJyb2xlIjoxfQ.qpYMI3BCWVYRl2UGa98Z4vzcZUhx-LxeZ5hrDCXiJ_s",
 		defaultBucket: "default",
 		success:       0.0,
 		failure:       0.0,

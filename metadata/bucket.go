@@ -45,11 +45,11 @@ type Layer struct {
 type Bucket struct {
 	m          sync.RWMutex
 	Root       string
-	Name       string   // bucket name
-	MemoTree   *RBTree  // key -> entry
-	SSTable    []*Layer // read only layer list
-	MemoSize   int64    // size of mempmap
-	CreateTime int64    // create timestamp
+	Name       string  // bucket name
+	MemoTree   *RBTree // key -> entry
+	SSTable    *LSMT   // read only layer list
+	MemoSize   int64   // size of mempmap
+	CreateTime int64   // create timestamp
 }
 
 func (b *Bucket) rotate() ([]string, error) {
@@ -65,7 +65,8 @@ func (b *Bucket) rotate() ([]string, error) {
 		volumes = append(volumes, volume)
 	}
 	b.MemoTree = new(RBTree)
-	err := b.writeLayer(entryList, volumes, len(b.SSTable), len(b.SSTable))
+	layer, err := b.writeLayer(entryList, volumes, b.SSTable.Size-1, b.SSTable.Size-1)
+	b.SSTable.pushLayer(layer, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -79,23 +80,23 @@ func (b *Bucket) deleteLayer(name string) {
 	}
 }
 
-func (b *Bucket) writeLayer(entryList []*Entry, volumes []string, begin int, end int) error {
+func (b *Bucket) writeLayer(entryList []*Entry, volumes []string, begin int, end int) (*Layer, error) {
 	bytes, err := json.Marshal(entryList)
 	if err != nil {
 		logrus.WithError(err).Warn("Marshal JSON failed")
-		return status.Error(codes.Internal, "marshal JSON failed")
+		return nil, status.Error(codes.Internal, "marshal JSON failed")
 	}
 	name := fmt.Sprintf("%v-%v-%v", b.Name, begin, end)
 	file, err := os.Create(path.Join(b.Root, name))
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Create layer file failed")
-		return status.Error(codes.Internal, "create layer file failed")
+		return nil, status.Error(codes.Internal, "create layer file failed")
 	}
 	defer file.Close()
 	_, err = file.Write(bytes)
 	if err != nil {
 		logrus.WithField("bucket", b.Name).WithError(err).Warn("Write layer file failed")
-		return status.Error(codes.Internal, "write layer file failed")
+		return nil, status.Error(codes.Internal, "write layer file failed")
 	}
 	layer := &Layer{
 		Name:    name,
@@ -104,8 +105,7 @@ func (b *Bucket) writeLayer(entryList []*Entry, volumes []string, begin int, end
 		End:     end,
 	}
 	logrus.Debugf("Add new layer %v", name)
-	b.SSTable = append(b.SSTable, layer)
-	return nil
+	return layer, nil
 }
 
 func (b *Bucket) readLayer(name string) ([]*Entry, error) {
