@@ -1,5 +1,7 @@
 package global
 
+import "errors"
+
 // Permission level for authentication
 const (
 	PermissionNone = iota
@@ -18,3 +20,5 @@ const (
 	MaxTransportSize = 1 << 32
 	MaxChunkSize     = 1 << 25
 )
+
+var ErrorWrongLeader = errors.New("wrong leader")

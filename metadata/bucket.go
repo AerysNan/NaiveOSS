@@ -18,7 +18,7 @@ type Entry struct {
 	Key        string
 	Name       string
 	Tag        string
-	Address    string
+	GroupId    string
 	Volume     int64
 	Offset     int64
 	Size       int64
@@ -28,7 +28,7 @@ type Entry struct {
 
 // EntryMeta is a reduced version of entry for tag map
 type EntryMeta struct {
-	Address string
+	GroupId string
 	Volume  int64
 	Offset  int64
 	Size    int64
@@ -59,7 +59,7 @@ func (b *Bucket) rotate() ([]string, error) {
 	entries := b.MemoTree.toList()
 	for _, entry := range entries {
 		entryList = append(entryList, entry)
-		volumeSet[fmt.Sprintf("%v-%v", entry.Volume, entry.Address)] = struct{}{}
+		volumeSet[fmt.Sprintf("%v-%v", entry.Volume, entry.GroupId)] = struct{}{}
 	}
 	volumes := make([]string, 0)
 	for volume := range volumeSet {

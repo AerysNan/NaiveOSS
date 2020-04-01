@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"math/rand"
 	"os"
 	"path"
 	"sync"
@@ -21,6 +20,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+const executeTimeout = 2 * time.Second
 
 // Config for metadata server
 type Config struct {
@@ -39,29 +40,41 @@ type Server struct {
 	pm.MetadataForStorageServer `json:"-"`
 	pm.MetadataForProxyServer   `json:"-"`
 
-	config         *Config
-	m              sync.RWMutex
-	ref            map[string]int64
-	Root           string `json:"-"`
-	Address        string `json:"-"`
-	TagMap         map[string]*EntryMeta
-	Bucket         map[string]*Bucket
-	storageTimer   map[string]time.Time
-	storageClients map[string]ps.StorageForMetadataClient
+	config        *Config
+	m             sync.RWMutex
+	ref           map[string]int64
+	Root          string `json:"-"`
+	Address       string `json:"-"`
+	TagMap        map[string]*EntryMeta
+	Bucket        map[string]*Bucket
+	storageTimer  map[string]time.Time
+	storageClerks map[string]*Clerk
+
+	ClientId  int64
+	CommandId int64
+}
+
+type Clerk struct {
+	GroupId   string
+	Addresses []string
+	servers   []ps.StorageForMetadataClient
+	LeaderId  int64
 }
 
 // NewMetadataServer returns a new metadata server
 func NewMetadataServer(address string, root string, config *Config) *Server {
 	s := &Server{
-		m:              sync.RWMutex{},
-		ref:            make(map[string]int64),
-		config:         config,
-		Root:           root,
-		Address:        address,
-		TagMap:         make(map[string]*EntryMeta),
-		Bucket:         make(map[string]*Bucket),
-		storageTimer:   make(map[string]time.Time),
-		storageClients: make(map[string]ps.StorageForMetadataClient),
+		m:             sync.RWMutex{},
+		ref:           make(map[string]int64),
+		config:        config,
+		Root:          root,
+		Address:       address,
+		TagMap:        make(map[string]*EntryMeta),
+		Bucket:        make(map[string]*Bucket),
+		storageTimer:  make(map[string]time.Time),
+		storageClerks: make(map[string]*Clerk),
+		ClientId:      nrand(),
+		CommandId:     0,
 	}
 	s.recover()
 	go s.gcLoop()
@@ -105,55 +118,127 @@ func (s *Server) recover() {
 	}
 }
 
+func (s *Server) sendState(clerk *Clerk, request *ps.StateRequest) (*ps.StateResponse, error) {
+	s.m.Lock()
+	s.CommandId++
+	s.m.Unlock()
+	deadline := time.Now().Add(executeTimeout)
+	for {
+		response, err := clerk.servers[clerk.LeaderId].State(context.Background(), request)
+		if err != nil {
+			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
+			if time.Now().After(deadline) {
+				return nil, err
+			}
+			continue
+		}
+		return response, nil
+	}
+}
+
+func (s *Server) sendRotate(clerk *Clerk, request *ps.RotateRequest) (*ps.RotateResponse, error) {
+	s.m.Lock()
+	s.CommandId++
+	s.m.Unlock()
+	deadline := time.Now().Add(executeTimeout)
+	for {
+		response, err := clerk.servers[clerk.LeaderId].Rotate(context.Background(), request)
+		if err != nil {
+			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
+			if time.Now().After(deadline) {
+				return nil, err
+			}
+			continue
+		}
+		return response, nil
+	}
+}
+
+func (s *Server) sendMigrate(clerk *Clerk, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
+	s.m.Lock()
+	s.CommandId++
+	s.m.Unlock()
+	deadline := time.Now().Add(executeTimeout)
+	for {
+		response, err := clerk.servers[clerk.LeaderId].Migrate(context.Background(), request)
+		if err != nil {
+			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
+			if time.Now().After(deadline) {
+				return nil, err
+			}
+			continue
+		}
+		return response, nil
+	}
+}
+
+func (s *Server) sendDeleteVolume(clerk *Clerk, request *ps.DeleteVolumeRequest) (*ps.DeleteVolumeResponse, error) {
+	s.m.Lock()
+	s.CommandId++
+	s.m.Unlock()
+	deadline := time.Now().Add(executeTimeout)
+	for {
+		response, err := clerk.servers[clerk.LeaderId].DeleteVolume(context.Background(), request)
+		if err != nil {
+			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
+			if time.Now().After(deadline) {
+				return nil, err
+			}
+			continue
+		}
+		return response, nil
+	}
+}
+
 func (s *Server) recursiveCompact(b *Bucket, level int) {
-	b.m.Lock()
+	b.m.RLock()
 	if level >= len(b.SSTable.Layers) || len(b.SSTable.Layers[level]) <= s.config.CompactThreshold {
-		b.m.Unlock()
+		b.m.RUnlock()
 		return
 	}
 	logrus.WithField("bucket", b.Name).Debugf("Perform compact on level %v", level)
 	entries, err := b.mergeLayers(b.SSTable.Layers[level])
 	if err != nil {
 		logrus.WithError(err).Error("Merge layers failed")
-		b.m.Unlock()
+		b.m.RUnlock()
 		return
 	}
+	b.m.RUnlock()
 	v2Size := make(map[string]int64)
 	for _, entry := range entries {
-		key := fmt.Sprintf("%v-%v", entry.Volume, entry.Address)
+		key := fmt.Sprintf("%v-%v", entry.Volume, entry.GroupId)
 		v2Size[key] += entry.Size
 		logrus.WithField("bucket", b.Name).Debugf("Add size %v on volume %v", entry.Size, key)
 	}
 	layers := [][]*Entry{entries}
 	for key, size := range v2Size {
-		var address string
+		var groupId string
 		var volumeID int64
-		fmt.Sscanf(key, "%v-%v", &volumeID, &address)
-		client, ok := s.storageClients[address]
+		fmt.Sscanf(key, "%v-%v", &volumeID, &groupId)
+		s.m.RLock()
+		clerk, ok := s.storageClerks[groupId]
+		s.m.RUnlock()
 		if !ok {
-			logrus.WithField("address", address).Error("Storage client not found")
-			b.m.Unlock()
+			logrus.WithField("group", groupId).Error("Storage client not found")
 			return
 		}
-		state, err := client.State(context.Background(), &ps.StateRequest{
+		state, err := s.sendState(clerk, &ps.StateRequest{
 			VolumeId: volumeID,
 		})
 		if err != nil {
 			logrus.WithError(err).Error("Get volume state failed")
-			b.m.Unlock()
 			return
 		}
 		trashRate := 1.0 - float64(size)/float64(state.Size)
 
 		if trashRate > s.config.TrashRateThreshold {
 			logrus.WithField("volume", key).Debugf("Trashrate threshold exceeded, content %v, actual %v", size, state.Size)
-			newEntries, err := s.compress(address, volumeID, entries)
+			newEntries, err := s.compress(groupId, volumeID, entries)
 			if err == nil {
 				logrus.Debug("Compress volume succeeded")
 				layers = append(layers, newEntries)
 			} else {
 				logrus.WithError(err).Error("Compress volume failed")
-				b.m.Unlock()
 				return
 			}
 		}
@@ -161,12 +246,13 @@ func (s *Server) recursiveCompact(b *Bucket, level int) {
 	entries = mergeEntryMatrix(layers)
 	set := make(map[string]struct{})
 	for _, entry := range entries {
-		set[fmt.Sprintf("%v-%v", entry.Volume, entry.Address)] = struct{}{}
+		set[fmt.Sprintf("%v-%v", entry.Volume, entry.GroupId)] = struct{}{}
 	}
 	volumeIDs := make([]string, 0)
 	for volumeID := range set {
 		volumeIDs = append(volumeIDs, volumeID)
 	}
+	b.m.Lock()
 	begin := b.SSTable.Layers[level][0].Begin
 	end := b.SSTable.Layers[level][len(b.SSTable.Layers[level])-1].End
 	compactedLayer := &Layer{
@@ -217,36 +303,36 @@ func (s *Server) compactLoop() {
 	}
 }
 
-func (s *Server) compress(address string, volumeID int64, entries []*Entry) ([]*Entry, error) {
+func (s *Server) compress(groupId string, volumeID int64, entries []*Entry) ([]*Entry, error) {
 	logrus.WithFields(logrus.Fields{
-		"address":  address,
+		"group":    groupId,
 		"volumeID": volumeID,
 	}).Debug("Begin to compress volume")
 	resultEntries := make([]*Entry, 0)
 	size := int64(0)
 	for _, entry := range entries {
-		if entry.Address == address && entry.Volume == volumeID && !entry.Delete {
+		if entry.GroupId == groupId && entry.Volume == volumeID && !entry.Delete {
 			resultEntries = append(resultEntries, entry)
 			size += entry.Size
 		}
 	}
 	if size == 0 {
 		logrus.WithFields(logrus.Fields{
-			"address":  address,
+			"group":    groupId,
 			"volumeID": volumeID,
 		}).Debug("Remove empty volume")
 		return []*Entry{}, nil
 	}
-	client, ok := s.storageClients[address]
+	clerk, ok := s.storageClerks[groupId]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "no such storage client")
 	}
-	_, err := client.Rotate(context.Background(), &ps.RotateRequest{})
+	_, err := s.sendRotate(clerk, &ps.RotateRequest{})
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "create new volume failed")
 	}
 	for _, entry := range resultEntries {
-		response, err := client.Migrate(context.Background(), &ps.MigrateRequest{
+		response, err := s.sendMigrate(clerk, &ps.MigrateRequest{
 			VolumeId: entry.Volume,
 			Offset:   entry.Offset,
 		})
@@ -262,11 +348,11 @@ func (s *Server) compress(address string, volumeID int64, entries []*Entry) ([]*
 func (s *Server) heartbeatLoop() {
 	ticker := time.NewTicker(s.config.HeartbeatTimeout)
 	for {
-		for address, t := range s.storageTimer {
+		for group, t := range s.storageTimer {
 			if t.Add(s.config.HeartbeatTimeout).Before(time.Now()) {
-				logrus.WithField("address", address).Warn("Close expired storage connenction")
-				delete(s.storageTimer, address)
-				delete(s.storageClients, address)
+				logrus.WithField("group", group).Warn("Close expired storage connenction")
+				delete(s.storageTimer, group)
+				delete(s.storageClerks, group)
 			}
 		}
 		<-ticker.C
@@ -297,17 +383,19 @@ func (s *Server) gcLoop() {
 	ticker := time.NewTicker(s.config.GCTimeout)
 	for {
 		s.m.RLock()
-		for volume, ref := range s.ref {
+		refs := s.ref
+		s.m.RUnlock()
+		for volume, ref := range refs {
 			if ref > 0 {
 				continue
 			}
-			var address string
+			var groupId string
 			var volumeID int64
-			fmt.Sscanf(volume, "%v-%v", &volumeID, &address)
+			fmt.Sscanf(volume, "%v-%v", &volumeID, &groupId)
 			found := func() bool {
 				for _, bucket := range s.Bucket {
 					for _, entry := range bucket.MemoTree.toList() {
-						if entry.Address == address && entry.Volume == volumeID {
+						if entry.GroupId == groupId && entry.Volume == volumeID {
 							return true
 						}
 					}
@@ -317,11 +405,13 @@ func (s *Server) gcLoop() {
 			if found {
 				continue
 			}
+			s.m.Lock()
 			delete(s.ref, volume)
 			logrus.WithField("volume", volume).Debug("Delete zero referenced volume")
-			client, ok := s.storageClients[address]
+			clerk, ok := s.storageClerks[groupId]
 			if !ok {
-				logrus.WithField("address", address).Error("Storage client not found")
+				logrus.WithField("group", groupId).Error("Storage client not found")
+				s.m.Unlock()
 				continue
 			}
 			for tag, entry := range s.TagMap {
@@ -329,7 +419,8 @@ func (s *Server) gcLoop() {
 					delete(s.TagMap, tag)
 				}
 			}
-			_, err := client.DeleteVolume(context.Background(), &ps.DeleteVolumeRequest{
+			s.m.Unlock()
+			_, err := s.sendDeleteVolume(clerk, &ps.DeleteVolumeRequest{
 				VolumeId: volumeID,
 			})
 			if err != nil {
@@ -338,7 +429,6 @@ func (s *Server) gcLoop() {
 				logrus.Debug("GC useless volume succeeded")
 			}
 		}
-		s.m.RUnlock()
 		<-ticker.C
 	}
 }
@@ -386,21 +476,29 @@ func (s *Server) ListBucket(ctx context.Context, request *pm.ListBucketRequest) 
 
 // Heartbeat deals heartbeat requests from storage servers
 func (s *Server) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
-	address := request.Address
+	group := request.Group
 	s.m.Lock()
 	defer s.m.Unlock()
-	_, ok := s.storageClients[address]
+	_, ok := s.storageClerks[group.GroupId]
 
 	if !ok {
-		connection, err := grpc.Dial(request.Address, grpc.WithInsecure())
-		if err != nil {
-			return nil, err
+		storageClients := make([]ps.StorageForMetadataClient, 0)
+		for _, address := range group.Addresses {
+			connection, err := grpc.Dial(address, grpc.WithInsecure())
+			if err != nil {
+				return nil, err
+			}
+			storageClients = append(storageClients, ps.NewStorageForMetadataClient(connection))
 		}
-		storageClient := ps.NewStorageForMetadataClient(connection)
-		s.storageClients[address] = storageClient
-		logrus.WithField("address", address).Info("Connect to new storage server")
+		s.storageClerks[group.GroupId] = &Clerk{
+			GroupId:   group.GroupId,
+			Addresses: group.Addresses,
+			servers:   storageClients,
+			LeaderId:  request.LeaderId,
+		}
+		logrus.WithField("group", group.GroupId).Info("Connect to new storage server group")
 	}
-	s.storageTimer[address] = time.Now()
+	s.storageTimer[group.GroupId] = time.Now()
 	return &pm.HeartbeatResponse{}, nil
 }
 
@@ -467,7 +565,7 @@ func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*
 			Key:        request.Key,
 			Tag:        request.Tag,
 			Name:       request.Name,
-			Address:    meta.Address,
+			GroupId:    meta.GroupId,
 			Volume:     meta.Volume,
 			Offset:     meta.Offset,
 			Size:       meta.Size,
@@ -488,22 +586,20 @@ func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*
 		bucket.m.Unlock()
 		return &pm.CheckMetaResponse{
 			Existed: true,
-			Address: "",
+			Group:   nil,
 		}, nil
 	}
 	s.m.RLock()
 	defer s.m.RUnlock()
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	if len(s.storageClients) != 0 {
-		index := r.Intn(len(s.storageClients))
-		for address := range s.storageClients {
-			if index == 0 {
-				return &pm.CheckMetaResponse{
-					Existed: false,
-					Address: address,
-				}, nil
-			}
-			index--
+	if len(s.storageClerks) != 0 {
+		for _, group := range s.storageClerks {
+			return &pm.CheckMetaResponse{
+				Existed: false,
+				Group: &pm.Group{
+					GroupId:   group.GroupId,
+					Addresses: group.Addresses,
+				},
+			}, nil
 		}
 	}
 	return nil, status.Error(codes.Unavailable, "no storage device available")
@@ -524,7 +620,7 @@ func (s *Server) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.P
 		Key:        request.Key,
 		Tag:        request.Tag,
 		Name:       request.Name,
-		Address:    request.Address,
+		GroupId:    request.GroupId,
 		Volume:     request.VolumeId,
 		Offset:     request.Offset,
 		Size:       request.Size,
@@ -534,7 +630,7 @@ func (s *Server) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.P
 	bucket.MemoTree.put(request.Key, entry)
 	bucket.MemoSize += request.Size
 	s.TagMap[request.Tag] = &EntryMeta{
-		Address: request.Address,
+		GroupId: request.GroupId,
 		Volume:  request.VolumeId,
 		Offset:  request.Offset,
 		Size:    request.Size,
@@ -571,8 +667,11 @@ func (s *Server) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.G
 		return nil, status.Error(codes.NotFound, "object metadata not found")
 	}
 	return &pm.GetMetaResponse{
-		Name:       entry.Name,
-		Address:    entry.Address,
+		Name: entry.Name,
+		Group: &pm.Group{
+			GroupId:   entry.GroupId,
+			Addresses: s.storageClerks[entry.GroupId].Addresses,
+		},
 		VolumeId:   int64(entry.Volume),
 		Offset:     int64(entry.Offset),
 		Size:       int64(entry.Size),

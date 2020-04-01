@@ -36,6 +36,7 @@ type Config struct {
 	DumpTimeout      time.Duration
 	HeartbeatTimeout time.Duration
 	ValidBlobTimeout time.Duration
+	PeerAddresses    []string
 }
 
 // Server represents storage server for storing object data
@@ -53,6 +54,7 @@ type Server struct {
 	Blobs         map[string]*Blob
 	Volumes       map[int64]*Volume
 	CurrentVolume int64
+	GroupId       string
 }
 
 func NewStorageServer(address string, root string, metadataClient pm.MetadataForStorageClient, config *Config) *Server {
@@ -67,6 +69,7 @@ func NewStorageServer(address string, root string, metadataClient pm.MetadataFor
 		BSDs:           make(map[int64]*BSD),
 		Volumes:        make(map[int64]*Volume),
 		CurrentVolume:  0,
+		GroupId:        "",
 	}
 	storageServer.recover()
 	storageServer.bsdInit()
@@ -119,7 +122,10 @@ func (s *Server) heartbeatLoop() {
 	for {
 		ctx := context.Background()
 		_, err := s.metadataClient.Heartbeat(ctx, &pm.HeartbeatRequest{
-			Address: s.Address,
+			Group: &pm.Group{
+				GroupId:   s.GroupId,
+				Addresses: s.config.PeerAddresses,
+			},
 		})
 		if err != nil {
 			logrus.WithError(err).Error("Heartbeat failed")
