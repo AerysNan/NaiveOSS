@@ -107,7 +107,7 @@ func (s *Server) recover() {
 
 func (s *Server) recursiveCompact(b *Bucket, level int) {
 	b.m.Lock()
-	if len(b.SSTable.Layers[level]) <= s.config.CompactThreshold {
+	if level >= len(b.SSTable.Layers) || len(b.SSTable.Layers[level]) <= s.config.CompactThreshold {
 		b.m.Unlock()
 		return
 	}
@@ -122,6 +122,7 @@ func (s *Server) recursiveCompact(b *Bucket, level int) {
 	for _, entry := range entries {
 		key := fmt.Sprintf("%v-%v", entry.Volume, entry.Address)
 		v2Size[key] += entry.Size
+		logrus.WithField("bucket", b.Name).Debugf("Add size %v on volume %v", entry.Size, key)
 	}
 	layers := [][]*Entry{entries}
 	for key, size := range v2Size {
@@ -371,6 +372,18 @@ func (s *Server) searchEntry(bucket *Bucket, key string) (*Entry, error) {
 	return nil, nil
 }
 
+func (s *Server) ListBucket(ctx context.Context, request *pm.ListBucketRequest) (*pm.ListBucketResposne, error) {
+	s.m.RLock()
+	defer s.m.RUnlock()
+	buckets := make([]string, 0)
+	for bucket := range s.Bucket {
+		buckets = append(buckets, bucket)
+	}
+	return &pm.ListBucketResposne{
+		Buckets: buckets,
+	}, nil
+}
+
 // Heartbeat deals heartbeat requests from storage servers
 func (s *Server) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
 	address := request.Address
@@ -453,6 +466,7 @@ func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*
 		entry := &Entry{
 			Key:        request.Key,
 			Tag:        request.Tag,
+			Name:       request.Name,
 			Address:    meta.Address,
 			Volume:     meta.Volume,
 			Offset:     meta.Offset,
@@ -509,6 +523,7 @@ func (s *Server) PutMeta(ctx context.Context, request *pm.PutMetaRequest) (*pm.P
 	entry := &Entry{
 		Key:        request.Key,
 		Tag:        request.Tag,
+		Name:       request.Name,
 		Address:    request.Address,
 		Volume:     request.VolumeId,
 		Offset:     request.Offset,
@@ -556,11 +571,53 @@ func (s *Server) GetMeta(ctx context.Context, request *pm.GetMetaRequest) (*pm.G
 		return nil, status.Error(codes.NotFound, "object metadata not found")
 	}
 	return &pm.GetMetaResponse{
+		Name:       entry.Name,
 		Address:    entry.Address,
 		VolumeId:   int64(entry.Volume),
 		Offset:     int64(entry.Offset),
 		Size:       int64(entry.Size),
 		CreateTime: int64(entry.CreateTime),
+	}, nil
+}
+
+func (s *Server) ListObject(ctx context.Context, request *pm.ListObjectRequest) (*pm.ListObjectResponse, error) {
+	s.m.RLock()
+	bucket, ok := s.Bucket[request.Bucket]
+	if !ok {
+		s.m.RUnlock()
+		return nil, status.Error(codes.NotFound, "bucket not exist")
+	}
+	bucket.m.RLock()
+	defer bucket.m.RUnlock()
+	s.m.RUnlock()
+	entryMatrix := make([][]*Entry, 0)
+	for _, level := range bucket.SSTable.Layers {
+		for _, layer := range level {
+			entries, err := bucket.readLayer(layer.Name)
+			if err != nil {
+				logrus.WithError(err).Errorf("Range layer %v failed", layer.Name)
+				return nil, err
+			}
+			if len(entries) > 0 {
+				entryMatrix = append(entryMatrix, entries)
+			}
+		}
+	}
+	slice := bucket.MemoTree.toList()
+	if len(slice) > 0 {
+		entryMatrix = append(entryMatrix, slice)
+	}
+	objects := make([]*pm.Metadata, 0)
+	for _, entry := range mergeEntryMatrix(entryMatrix) {
+		objects = append(objects, &pm.Metadata{
+			Key:         entry.Key,
+			Name:        entry.Name,
+			Size:        entry.Size,
+			CreatedTime: entry.CreateTime,
+		})
+	}
+	return &pm.ListObjectResponse{
+		Objects: objects,
 	}, nil
 }
 
@@ -612,17 +669,17 @@ func (s *Server) DeleteMeta(ctx context.Context, request *pm.DeleteMetaRequest) 
 	bucket.m.Lock()
 	defer bucket.m.Unlock()
 	s.m.RUnlock()
-	entry, err := s.searchEntry(bucket, request.Key)
-	if err != nil {
-		return nil, err
-	}
-	if entry == nil || entry.Delete {
-		return nil, status.Error(codes.NotFound, "object metadata not found")
-	}
 	e, ok := bucket.MemoTree.get(request.Key)
 	if ok {
 		e.Delete = true
 	} else {
+		entry, err := s.searchEntry(bucket, request.Key)
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil || entry.Delete {
+			return nil, status.Error(codes.NotFound, "object metadata not found")
+		}
 		entry.Delete = true
 		bucket.MemoTree.put(request.Key, entry)
 	}

@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,6 +105,20 @@ func (s *Server) createBucket(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
+func (s *Server) listBucket(w http.ResponseWriter, r *http.Request) {
+	_, err := checkParameter(r, []string{"token"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	response, err := s.metaClient.ListBucket(context.Background(), &pm.ListBucketRequest{})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResponse(w, []byte(strings.Join(response.Buckets, " ")))
+}
+
 func (s *Server) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	p, err := checkParameter(r, []string{"bucket", "token"})
 	if err != nil {
@@ -137,12 +152,12 @@ func (s *Server) deleteBucket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(r, []string{"bucket", "key", "tag", "token", "id"})
+	p, err := checkParameter(r, []string{"bucket", "name", "key", "tag", "token", "id"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	bucket, key, tag, token, id := p["bucket"], p["key"], p["tag"], p["token"], p["id"]
+	bucket, name, key, tag, token, id := p["bucket"], p["name"], p["key"], p["tag"], p["token"], p["id"]
 	ctx := context.Background()
 	_, err = s.authClient.Check(ctx, &pa.CheckRequest{
 		Token:      token,
@@ -155,6 +170,7 @@ func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := s.metaClient.CheckMeta(ctx, &pm.CheckMetaRequest{
 		Bucket: bucket,
+		Name:   name,
 		Key:    key,
 		Tag:    tag,
 	})
@@ -198,12 +214,12 @@ func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
-	p, err := checkParameter(r, []string{"id", "bucket", "key", "tag", "token"})
+	p, err := checkParameter(r, []string{"id", "name", "bucket", "key", "tag", "token"})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	id, key, bucket, tag, token := p["id"], p["key"], p["bucket"], p["tag"], p["token"]
+	id, name, key, bucket, tag, token := p["id"], p["name"], p["key"], p["bucket"], p["tag"], p["token"]
 	ctx := context.Background()
 	_, err = s.authClient.Check(ctx, &pa.CheckRequest{
 		Token:      token,
@@ -236,6 +252,7 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 		Bucket:   bucket,
 		Key:      key,
 		Tag:      tag,
+		Name:     name,
 		Address:  address,
 		VolumeId: confirmResponse.VolumeId,
 		Offset:   confirmResponse.Offset,
@@ -340,6 +357,7 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	w.Header().Add("name", getMetaResponse.Name)
 	writeResponse(w, []byte(getResponse.Body))
 }
 
@@ -423,6 +441,36 @@ func (s *Server) rangeObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, []byte(fmt.Sprintf("%v", response.Key)))
+}
+
+func (s *Server) listObject(w http.ResponseWriter, r *http.Request) {
+	p, err := checkParameter(r, []string{"bucket", "token"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	bucket, token := p["bucket"], p["token"]
+	_, err = s.authClient.Check(context.Background(), &pa.CheckRequest{
+		Token:      token,
+		Bucket:     bucket,
+		Permission: global.PermissionRead,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	response, err := s.metaClient.ListObject(context.Background(), &pm.ListObjectRequest{
+		Bucket: bucket,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	objects := make([]string, 0)
+	for _, object := range response.Objects {
+		objects = append(objects, fmt.Sprintf("%v %v %v %v\n", object.Key, object.Name, object.Size, time.Unix(object.CreatedTime, 0).Format(time.RFC3339)))
+	}
+	writeResponse(w, []byte(strings.Join(objects, "")))
 }
 
 func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"oss/global"
+	"path"
 	"strconv"
 
 	"github.com/natefinch/atomic"
@@ -30,8 +31,13 @@ var (
 	createBucket           = app.Command("create-bucket", "Create a bucket")
 	createBucketFlagBucket = createBucket.Flag("bucket", "Bucket name").Short('b').Required().String()
 
+	listBucket = app.Command("list-bucket", "List all buckets")
+
 	deleteBucket           = app.Command("delete-bucket", "Delete a bucket")
 	deleteBucketFlagBucket = deleteBucket.Flag("bucket", "Bucket name").Short('b').Required().String()
+
+	listObject           = app.Command("ls", "list all keys")
+	listObjectFlagBucket = listObject.Flag("bucket", "Bucket name").Short('b').Required().String()
 
 	getObject           = app.Command("get", "Get object from oss")
 	getObjectFlagBucket = getObject.Flag("bucket", "Bucket name").Short('b').Required().String()
@@ -113,6 +119,19 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 			body: "OK",
 		}, nil
 
+	case listBucket.FullCommand():
+		request, err = http.NewRequest("GET", fmt.Sprintf("%s%s", *addr, "/api/bucket"), nil)
+		if err != nil {
+			return nil, errorBuildRequest
+		}
+
+	case listObject.FullCommand():
+		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/object"), nil)
+		if err != nil {
+			return nil, errorBuildRequest
+		}
+		request.Header.Add("bucket", *listObjectFlagBucket)
+
 	case createBucket.FullCommand():
 		request, err = http.NewRequest("POST", fmt.Sprintf("%s%s", *addr, "/api/bucket"), nil)
 		if err != nil {
@@ -147,6 +166,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 
 	case putObject.FullCommand():
 		file, err := os.Open(*putObjectFlagObject)
+		_, fileName := path.Split(*putObjectFlagObject)
 		if err != nil {
 			return nil, errorReadObjectFile
 		}
@@ -175,6 +195,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 			return nil, errorBuildRequest
 		}
 		request.Header.Add("bucket", *putObjectFlagBucket)
+		request.Header.Add("name", fileName)
 		request.Header.Add("key", *putObjectFlagKey)
 		request.Header.Add("tag", tag)
 		request.Header.Add("token", token)
@@ -242,6 +263,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		}
 		_ = os.Remove(name)
 		request.Header.Add("id", t.Id)
+		request.Header.Add("name", fileName)
 		request.Header.Add("bucket", *putObjectFlagBucket)
 		request.Header.Add("key", *putObjectFlagKey)
 		request.Header.Add("tag", tag)
@@ -301,7 +323,7 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 	defer response.Body.Close()
 	r := &Response{code: response.StatusCode}
 	if getFile && response.StatusCode == http.StatusOK {
-		path := *getObjectFlagKey
+		path := response.Header.Get("name")
 		for {
 			bytes := make([]byte, global.MaxChunkSize)
 			count, err := response.Body.Read(bytes)

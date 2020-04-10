@@ -12,6 +12,8 @@ message HeartbeatResponse {}
 service MetadataForProxy {
   rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse) {}
   rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse) {}
+  rpc ListBucket(ListBucketRequest) returns (ListBucketResposne) {}
+  rpc ListObject(ListObjectRequest) returns (ListObjectResponse) {}
   rpc RangeObject(RangeObjectRequest) returns (RangeObjectResponse) {}
   rpc CheckMeta(CheckMetaRequest) returns (CheckMetaResponse) {}
   rpc PutMeta(PutMetaRequest) returns (PutMetaResponse) {}
@@ -22,6 +24,21 @@ service MetadataForProxy {
 message CreateBucketRequest { string bucket = 1; }
 
 message CreateBucketResponse {}
+
+message ListBucketRequest {}
+
+message ListBucketResposne { repeated string buckets = 1; }
+
+message ListObjectRequest { string bucket = 1; }
+
+message ListObjectResponse { repeated Metadata objects = 1; }
+
+message Metadata {
+  string key = 1;
+  string name = 2;
+  int64 size = 3;
+  int64 created_time = 4;
+}
 
 message DeleteBucketRequest { string bucket = 1; }
 
@@ -37,8 +54,9 @@ message RangeObjectResponse { repeated string key = 1; }
 
 message CheckMetaRequest {
   string bucket = 1;
-  string key = 2;
-  string tag = 3;
+  string name = 2;
+  string key = 3;
+  string tag = 4;
 }
 
 message CheckMetaResponse {
@@ -48,12 +66,13 @@ message CheckMetaResponse {
 
 message PutMetaRequest {
   string bucket = 1;
-  string key = 2;
-  string tag = 3;
-  string address = 4;
-  int64 volume_id = 5;
-  int64 offset = 6;
-  int64 size = 7;
+  string name = 2;
+  string key = 3;
+  string tag = 4;
+  string address = 5;
+  int64 volume_id = 6;
+  int64 offset = 7;
+  int64 size = 8;
 }
 
 message PutMetaResponse {}
@@ -65,10 +84,11 @@ message GetMetaRequest {
 
 message GetMetaResponse {
   string address = 1;
-  int64 volume_id = 2;
-  int64 offset = 3;
-  int64 size = 4;
-  int64 create_time = 5;
+  string name = 2;
+  int64 volume_id = 3;
+  int64 offset = 4;
+  int64 size = 5;
+  int64 create_time = 6;
 }
 
 message DeleteMetaRequest {

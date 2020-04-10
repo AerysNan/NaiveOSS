@@ -417,6 +417,7 @@ func (s *Server) putObject(data []byte) (*ps.ConfirmResponse, error) {
 	response := &ps.ConfirmResponse{
 		VolumeId: id,
 		Offset:   offset,
+		Size:     size,
 	}
 	return response, nil
 }

@@ -16,6 +16,7 @@ import (
 // Entry is value entry for
 type Entry struct {
 	Key        string
+	Name       string
 	Tag        string
 	Address    string
 	Volume     int64
@@ -65,7 +66,7 @@ func (b *Bucket) rotate() ([]string, error) {
 		volumes = append(volumes, volume)
 	}
 	b.MemoTree = new(RBTree)
-	layer, err := b.writeLayer(entryList, volumes, b.SSTable.Size-1, b.SSTable.Size-1)
+	layer, err := b.writeLayer(entryList, volumes, b.SSTable.Size, b.SSTable.Size)
 	b.SSTable.pushLayer(layer, 0)
 	if err != nil {
 		return nil, err
