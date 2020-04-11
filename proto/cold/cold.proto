@@ -1,0 +1,27 @@
+syntax = "proto3";
+package pc;
+
+service ColdForStorage {
+  rpc PushCold(PushColdRequest) returns (PushColdResponse) {}
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse) {}
+  rpc Read(ReadRequest) returns (ReadResponse) {}
+}
+
+message PushColdRequest {
+  int64 index = 1;
+  bytes data = 2;
+}
+
+message PushColdResponse {}
+
+message DeleteVolumeRequest { int64 volume_id = 1; }
+
+message DeleteVolumeResponse {}
+
+message ReadRequest {
+  int64 volume_id = 1;
+  int64 offset = 2;
+  int64 length = 3;
+}
+
+message ReadResponse { bytes data = 1; }

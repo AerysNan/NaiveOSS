@@ -8,6 +8,7 @@ protobuf:
 	cd proto/storage && protoc --go_out=plugins=grpc:. *.proto
 	cd proto/auth && protoc --go_out=plugins=grpc:. *.proto
 	cd proto/raft && protoc --go_out=plugins=grpc:. *.proto
+	cd proto/cold && protoc --go_out=plugins=grpc:. *.proto
 
 binary:
 	cd cmd/metadata && go build -o ../../build/metadata

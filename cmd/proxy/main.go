@@ -15,7 +15,7 @@ import (
 
 var (
 	address = kingpin.Flag("address", "address of proxy server").Default("0.0.0.0:8082").String()
-	port    = kingpin.Flag("port", "listen port of auth server").Default("8082").String()
+	port    = kingpin.Flag("port", "listen port of proxy server").Default("8082").String()
 	meta    = kingpin.Flag("meta", "listen address of meta server").Default("0.0.0.0:8081").String()
 	auth    = kingpin.Flag("auth", "listen address of auth server").Default("0.0.0.0:8083").String()
 	debug   = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()

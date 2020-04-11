@@ -3,12 +3,14 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/big"
 	"net"
 	"os"
 	"path"
@@ -16,21 +18,19 @@ import (
 	"time"
 
 	"oss/global"
+	pc "oss/proto/cold"
 	pm "oss/proto/metadata"
 	pr "oss/proto/raft"
 	ps "oss/proto/storage"
 	"oss/raft"
 
 	"github.com/golang/protobuf/ptypes"
-	"github.com/klauspost/reedsolomon"
 	"github.com/natefinch/atomic"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
-var enc reedsolomon.Encoder
 
 const ExecuteTimeout = 500 * time.Millisecond
 
@@ -55,6 +55,7 @@ type Config struct {
 	PeerAddresses     []string
 	RaftAddress       string
 	RaftPeerAddresses []string
+	ColdAddress       string
 	Root              string
 }
 
@@ -63,6 +64,7 @@ type Server struct {
 	ps.StorageForProxyServer
 	ps.StorageForMetadataServer
 	metadataClient pm.MetadataForStorageClient
+	coldClient     pc.ColdForStorageClient
 
 	m             sync.RWMutex
 	rf            *raft.Raft
@@ -70,7 +72,6 @@ type Server struct {
 	maxraftstate  int
 	Address       string `json:"-"`
 	Root          string `json:"-"`
-	BSDs          map[int64]*BSD
 	Blobs         map[string]*Blob
 	Volumes       map[int64]*Volume
 	CurrentVolume int64
@@ -80,20 +81,29 @@ type Server struct {
 	applyCh             chan pr.Message
 	persister           *raft.Persister
 	appliedRaftLogIndex int
+
+	ClientId  int64
+	CommandId int64
 }
 
-func NewStorageServer(metadataClient pm.MetadataForStorageClient, config *Config) *Server {
-	encoderInit(config)
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
+}
+
+func NewStorageServer(metadataClient pm.MetadataForStorageClient, coldClient pc.ColdForStorageClient, config *Config) *Server {
 	persister := raft.MakePersister(config.Root)
 	storageServer := &Server{
 		metadataClient: metadataClient,
+		coldClient:     coldClient,
 		m:              sync.RWMutex{},
 		config:         config,
 		maxraftstate:   1 << 20,
 		Address:        config.Address,
 		Root:           config.Root,
 		Blobs:          make(map[string]*Blob),
-		BSDs:           make(map[int64]*BSD),
 		Volumes:        make(map[int64]*Volume),
 		CurrentVolume:  0,
 
@@ -102,7 +112,11 @@ func NewStorageServer(metadataClient pm.MetadataForStorageClient, config *Config
 		applyCh:             make(chan pr.Message),
 		persister:           persister,
 		appliedRaftLogIndex: 0,
+
+		ClientId:  nrand(),
+		CommandId: 0,
 	}
+
 	storageServer.rf = raft.Make(make([]pr.RaftClient, len(config.RaftPeerAddresses)), -1, storageServer.persister, storageServer.applyCh)
 	go storageServer.startRaftServer()
 	me, clients := storageServer.buildRaftConnection()
@@ -111,7 +125,6 @@ func NewStorageServer(metadataClient pm.MetadataForStorageClient, config *Config
 	storageServer.rf.SetLogLevel(logrus.ErrorLevel)
 
 	storageServer.recover()
-	storageServer.bsdInit()
 	storageServer.addVolume()
 	storageServer.installSnapshot(persister.ReadSnapshot())
 	go storageServer.dumpLoop()
@@ -269,17 +282,17 @@ func (s *Server) applyDeleteVolume(op *pr.Op) (*ps.DeleteVolumeResponse, error) 
 	}
 	volume.m.Lock()
 	defer volume.m.Unlock()
-	if volume.BlockSize == -1 {
+	if !volume.Cold {
 		err := os.Remove(path.Join(s.Root, fmt.Sprintf("%d.dat", volumeID)))
 		if err != nil {
 			logrus.WithError(err).Warnf("Delete volume %v failed", volumeID)
 		}
 	} else {
-		for _, block := range volume.Blocks {
-			err := os.Remove(block.Path)
-			if err != nil {
-				logrus.WithError(err).Warnf("Delete block %s failed", block.Path)
-			}
+		_, err := s.coldClient.DeleteVolume(context.Background(), &pc.DeleteVolumeRequest{
+			VolumeId: volumeID,
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 	delete(s.Volumes, volumeID)
@@ -418,20 +431,6 @@ func (s *Server) recover() {
 	if err != nil {
 		logrus.WithError(err).Error("Unmarshal JSON failed")
 		return
-	}
-}
-
-func (s *Server) bsdInit() {
-	if len(s.BSDs) != s.config.BSDNum {
-		for i := 0; i < s.config.BSDNum; i++ {
-			path := path.Join(s.Root, fmt.Sprintf("BSD_%d", i))
-			err := os.Mkdir(path, os.ModePerm)
-			if err != nil && !os.IsExist(err) {
-				logrus.WithError(err).Errorf("%s init failed", path)
-			} else {
-				s.BSDs[int64(i)] = NewBSD(path)
-			}
-		}
 	}
 }
 
@@ -686,23 +685,32 @@ func (s *Server) getObject(id, offset, start int64) ([]byte, error) {
 	volume.m.RLock()
 	s.m.RUnlock()
 	var data []byte
-	if volume.BlockSize != -1 {
+	if volume.Cold {
 		volume.m.RUnlock()
-		bytes, err := volume.readFromBlocks(offset, 8, s.config)
+		response, err := s.coldClient.Read(context.Background(), &pc.ReadRequest{
+			VolumeId: id,
+			Offset:   offset,
+			Length:   8,
+		})
 		if err != nil {
 			return nil, err
 		}
-		size := int64(binary.BigEndian.Uint64(bytes))
+		size := int64(binary.BigEndian.Uint64(response.Data))
 		if start > size {
 			return nil, status.Error(codes.InvalidArgument, "object offset overflow")
 		}
 		if start == size {
 			return nil, status.Error(codes.Unknown, "empty data response")
 		}
-		data, err = volume.readFromBlocks(offset+8+start, size-start, s.config)
+		response, err = s.coldClient.Read(context.Background(), &pc.ReadRequest{
+			VolumeId: id,
+			Offset:   offset + 8 + start,
+			Length:   size - start,
+		})
 		if err != nil {
 			return nil, err
 		}
+		data = response.Data
 	} else {
 		defer volume.m.RUnlock()
 		name := path.Join(s.Root, fmt.Sprintf("%d.dat", id))
@@ -836,21 +844,35 @@ func (s *Server) putObject(data []byte) (*ps.ConfirmResponse, error) {
 	return response, nil
 }
 
+func (s *Server) pushCold(volume *Volume) error {
+	name := path.Join(s.Root, fmt.Sprintf("%d.dat", volume.ID))
+	data, err := ioutil.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	_, err = s.coldClient.PushCold(context.Background(), &pc.PushColdRequest{
+		Index: volume.ID,
+		Data:  data,
+	})
+	if err != nil {
+		return err
+	}
+	_ = os.Remove(name)
+	volume.Cold = true
+	return nil
+}
+
 func (s *Server) addVolume() {
 	logrus.Infof("Volume index increase from %v to %v", s.CurrentVolume, s.CurrentVolume+1)
 	volume, ok := s.Volumes[s.CurrentVolume]
 	if ok && volume.Size != 0 {
-		go volume.encode(path.Join(s.Root, fmt.Sprintf("%d.dat", volume.ID)), s.chooseValidBSDs())
+		go func() {
+			err := s.pushCold(volume)
+			if err != nil {
+				logrus.WithError(err).Errorf("Push volume %v to cold failed", volume.ID)
+			}
+		}()
 	}
 	s.CurrentVolume++
 	s.Volumes[s.CurrentVolume] = NewVolume(s.CurrentVolume, s.config)
-}
-
-func (s *Server) chooseValidBSDs() []*BSD {
-	nums := generateRandomNumber(0, s.config.BSDNum, s.config.DataShard+s.config.ParityShard)
-	res := make([]*BSD, 0)
-	for _, num := range nums {
-		res = append(res, s.BSDs[int64(num)])
-	}
-	return res
 }

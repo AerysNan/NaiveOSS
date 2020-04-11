@@ -66,6 +66,7 @@ enum Type {
   PUT = 7;
   CONFIRM = 8;
   CHECK = 9;
+  COLD = 10;
 }
 
 message Message {

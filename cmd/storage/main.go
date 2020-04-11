@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"oss/global"
+	pc "oss/proto/cold"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 	"oss/storage"
@@ -17,6 +18,7 @@ import (
 
 var (
 	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("0.0.0.0:8081").String()
+	cold     = kingpin.Flag("cold", "listen address of cold server").Default("0.0.0.0:8084").String()
 	config   = kingpin.Flag("config", "config file full name").Default("../config/storage.json").String()
 	debug    = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
@@ -34,6 +36,14 @@ func main() {
 	}
 	defer metaConnection.Close()
 	metadataClient := pm.NewMetadataForStorageClient(metaConnection)
+
+	coldConnection, err := grpc.Dial(*cold, grpc.WithInsecure())
+	if err != nil {
+		logrus.WithError(err).Fatal("Connect to cold server failed")
+	}
+	defer coldConnection.Close()
+	coldClient := pc.NewColdForStorageClient(coldConnection)
+
 	file, err := os.Open(*config)
 	if err != nil {
 		logrus.WithError(err).Fatal("Open config file failed")
@@ -50,7 +60,7 @@ func main() {
 		logrus.WithError(err).Fatal("Unmarshal JSON failed")
 	}
 	file.Close()
-	storageServer := storage.NewStorageServer(metadataClient, config)
+	storageServer := storage.NewStorageServer(metadataClient, coldClient, config)
 	listen, err := net.Listen("tcp", config.Address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
