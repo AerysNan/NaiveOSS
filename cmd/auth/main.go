@@ -16,7 +16,7 @@ import (
 
 var (
 	port   = kingpin.Flag("port", "listen port of auth server").Default("8083").String()
-	root   = kingpin.Flag("root", "database file path").Default("../data").String()
+	root   = kingpin.Flag("root", "database file path").Default("../data/auth/").String()
 	config = kingpin.Flag("config", "config file full name").Default("../config/auth.json").String()
 	debug  = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"oss/global"
 	pm "oss/proto/metadata"
 	ps "oss/proto/storage"
 
@@ -121,72 +122,92 @@ func (s *Server) recover() {
 func (s *Server) sendState(clerk *Clerk, request *ps.StateRequest) (*ps.StateResponse, error) {
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	deadline := time.Now().Add(executeTimeout)
 	for {
 		response, err := clerk.servers[clerk.LeaderId].State(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
 func (s *Server) sendRotate(clerk *Clerk, request *ps.RotateRequest) (*ps.RotateResponse, error) {
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	deadline := time.Now().Add(executeTimeout)
 	for {
 		response, err := clerk.servers[clerk.LeaderId].Rotate(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
 func (s *Server) sendMigrate(clerk *Clerk, request *ps.MigrateRequest) (*ps.MigrateResponse, error) {
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	deadline := time.Now().Add(executeTimeout)
 	for {
 		response, err := clerk.servers[clerk.LeaderId].Migrate(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
 func (s *Server) sendDeleteVolume(clerk *Clerk, request *ps.DeleteVolumeRequest) (*ps.DeleteVolumeResponse, error) {
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	deadline := time.Now().Add(executeTimeout)
 	for {
 		response, err := clerk.servers[clerk.LeaderId].DeleteVolume(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			clerk.LeaderId = (clerk.LeaderId + 1) % int64(len(clerk.servers))
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
@@ -224,6 +245,7 @@ func (s *Server) recursiveCompact(b *Bucket, level int) {
 		}
 		state, err := s.sendState(clerk, &ps.StateRequest{
 			VolumeId: volumeID,
+			ClientId: s.ClientId,
 		})
 		if err != nil {
 			logrus.WithError(err).Error("Get volume state failed")
@@ -327,7 +349,9 @@ func (s *Server) compress(groupId string, volumeID int64, entries []*Entry) ([]*
 	if !ok {
 		return nil, status.Error(codes.NotFound, "no such storage client")
 	}
-	_, err := s.sendRotate(clerk, &ps.RotateRequest{})
+	_, err := s.sendRotate(clerk, &ps.RotateRequest{
+		ClientId: s.ClientId,
+	})
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "create new volume failed")
 	}
@@ -335,6 +359,7 @@ func (s *Server) compress(groupId string, volumeID int64, entries []*Entry) ([]*
 		response, err := s.sendMigrate(clerk, &ps.MigrateRequest{
 			VolumeId: entry.Volume,
 			Offset:   entry.Offset,
+			ClientId: s.ClientId,
 		})
 		if err != nil {
 			return nil, err
@@ -422,6 +447,7 @@ func (s *Server) gcLoop() {
 			s.m.Unlock()
 			_, err := s.sendDeleteVolume(clerk, &ps.DeleteVolumeRequest{
 				VolumeId: volumeID,
+				ClientId: s.ClientId,
 			})
 			if err != nil {
 				logrus.WithError(err).Error("GC useless volume failed")
@@ -476,6 +502,7 @@ func (s *Server) ListBucket(ctx context.Context, request *pm.ListBucketRequest) 
 
 // Heartbeat deals heartbeat requests from storage servers
 func (s *Server) Heartbeat(ctx context.Context, request *pm.HeartbeatRequest) (*pm.HeartbeatResponse, error) {
+	logrus.WithField("groupID", request.Group.GroupId).Debug("Received heartbeat")
 	group := request.Group
 	s.m.Lock()
 	defer s.m.Unlock()
@@ -602,7 +629,7 @@ func (s *Server) CheckMeta(ctx context.Context, request *pm.CheckMetaRequest) (*
 			}, nil
 		}
 	}
-	return nil, status.Error(codes.Unavailable, "no storage device available")
+	return nil, status.Error(codes.Unavailable, "no storage cluster available")
 }
 
 // PutMeta adds an key value entry to index structure

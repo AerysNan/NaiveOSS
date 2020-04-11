@@ -84,16 +84,17 @@ type Task struct {
 }
 
 var (
-	errorSaveToken      = errors.New("save token file failed")
-	errorSaveObject     = errors.New("save object file failed")
-	errorReadTaskFile   = errors.New("read task file failed")
-	errorParseTaskFile  = errors.New("parse task file failed")
-	errorReadResponse   = errors.New("read response body failed")
-	errorBuildRequest   = errors.New("build http request failed")
-	errorReadObjectFile = errors.New("read object file failed")
-	errorPutObjectFile  = errors.New("put object file failed")
-	errorExecuteRequest = errors.New("execute http request failed")
-	errorNotImplemented = errors.New("method not implemented")
+	errorSaveToken        = errors.New("save token file failed")
+	errorSaveObject       = errors.New("save object file failed")
+	errorReadTaskFile     = errors.New("read task file failed")
+	errorParseTaskFile    = errors.New("parse task file failed")
+	errorReadResponse     = errors.New("read response body failed")
+	errorBuildRequest     = errors.New("build http request failed")
+	errorReadObjectFile   = errors.New("read object file failed")
+	errorPutObjectFile    = errors.New("put object file failed")
+	errorExecuteRequest   = errors.New("execute http request failed")
+	errorNotImplemented   = errors.New("method not implemented")
+	errorCreateUploadTask = errors.New("create upload task failed")
 )
 
 func handle(client *http.Client, cmd string, token string) (*Response, error) {
@@ -203,6 +204,9 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		response, err := client.Do(request)
 		if err != nil {
 			return nil, errorPutObjectFile
+		}
+		if response.StatusCode != http.StatusOK {
+			return nil, errorCreateUploadTask
 		}
 		id, err := ioutil.ReadAll(response.Body)
 		response.Body.Close()

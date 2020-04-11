@@ -21,4 +21,6 @@ const (
 	MaxChunkSize     = 1 << 25
 )
 
-var ErrorWrongLeader = errors.New("wrong leader")
+var ErrorWrongLeader = "wrong storage leader"
+var ErrorStorageConnection = errors.New("failed to connect to storage cluster")
+var ErrorDuplicateRequest = errors.New("duplicate request")

@@ -1,4 +1,4 @@
-n = 26
+n = 200
 m = 1024
 
 all: clean protobuf binary object
@@ -21,7 +21,11 @@ clean:
 	cd proto/metadata && rm -f *.pb.go
 	cd proto/storage && rm -f *.pb.go
 	cd proto/auth && rm -f *.pb.go
-	cd data && rm -rf *
+	cd data/metadata && rm -rf *
+	cd data/storage_1 && rm -rf *
+	cd data/storage_2 && rm -rf *
+	cd data/storage_3 && rm -rf *
+	cd data/auth && rm -rf *
 
 object:
 	python gen.py $(n) $(m)

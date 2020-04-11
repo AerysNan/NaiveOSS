@@ -17,7 +17,7 @@ import (
 var (
 	address = kingpin.Flag("address", "address of meta server").Default("0.0.0.0:8081").String()
 	port    = kingpin.Flag("port", "listen port of meta server").Default("8081").String()
-	root    = kingpin.Flag("root", "metadata file path").Default("../data").String()
+	root    = kingpin.Flag("root", "metadata file path").Default("../data/metadata/").String()
 	config  = kingpin.Flag("config", "config file full name").Default("../config/metadata.json").String()
 	debug   = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )

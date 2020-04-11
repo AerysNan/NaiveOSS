@@ -62,18 +62,24 @@ func (s *Server) sendGet(connections []*grpc.ClientConn, request *ps.GetRequest)
 	deadline := time.Now().Add(executeTimeout)
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	for {
 		client := ps.NewStorageForProxyClient(connections[index])
 		response, err := client.Get(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			index = (index + 1) % len(connections)
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			logrus.WithError(err).Error("Send get failed")
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
@@ -82,18 +88,24 @@ func (s *Server) sendCreate(connections []*grpc.ClientConn, request *ps.CreateRe
 	deadline := time.Now().Add(executeTimeout)
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	for {
 		client := ps.NewStorageForProxyClient(connections[index])
 		response, err := client.Create(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			index = (index + 1) % len(connections)
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			logrus.WithError(err).Error("Send create failed")
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
@@ -102,18 +114,24 @@ func (s *Server) sendPut(connections []*grpc.ClientConn, request *ps.PutRequest)
 	deadline := time.Now().Add(executeTimeout)
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	for {
 		client := ps.NewStorageForProxyClient(connections[index])
 		response, err := client.Put(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			index = (index + 1) % len(connections)
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			logrus.WithError(err).Error("Send put failed")
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
@@ -122,18 +140,24 @@ func (s *Server) sendConfirm(connections []*grpc.ClientConn, request *ps.Confirm
 	deadline := time.Now().Add(executeTimeout)
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	for {
 		client := ps.NewStorageForProxyClient(connections[index])
 		response, err := client.Confirm(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			index = (index + 1) % len(connections)
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			logrus.WithError(err).Error("Send confirm failed")
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
@@ -142,18 +166,24 @@ func (s *Server) sendCheckBlob(connections []*grpc.ClientConn, request *ps.Check
 	deadline := time.Now().Add(executeTimeout)
 	s.m.Lock()
 	s.CommandId++
+	request.CommandId = s.CommandId
 	s.m.Unlock()
 	for {
 		client := ps.NewStorageForProxyClient(connections[index])
 		response, err := client.CheckBlob(context.Background(), request)
-		if err != nil {
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
 			index = (index + 1) % len(connections)
 			if time.Now().After(deadline) {
-				return nil, err
+				return nil, global.ErrorStorageConnection
 			}
-			continue
+		} else if err != nil {
+			logrus.WithError(err).Error("Send check blob failed")
+			return nil, err
 		}
-		return response, nil
 	}
 }
 
@@ -165,7 +195,9 @@ func (s *Server) checkExpiredBlobs() {
 		s.m.RUnlock()
 		blobs := make([]string, 0)
 		for groupId, connections := range connMap {
-			response, err := s.sendCheckBlob(connections, &ps.CheckBlobRequest{})
+			response, err := s.sendCheckBlob(connections, &ps.CheckBlobRequest{
+				ClientId: s.ClientId,
+			})
 			if err != nil {
 				logrus.WithField("group", groupId).Warn("connection fail")
 				continue
@@ -308,6 +340,7 @@ func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
 		GroupId:   group.GroupId,
 		Addresses: group.Addresses,
 	}
+	logrus.Infof("Create upload id %v", id)
 	s.m.Unlock()
 	connections, err := s.validateConnection(group)
 	if err != nil {
@@ -315,8 +348,9 @@ func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = s.sendCreate(connections, &ps.CreateRequest{
-		Tag: tag,
-		Id:  id,
+		Tag:      tag,
+		Id:       id,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -355,7 +389,8 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	confirmResponse, err := s.sendConfirm(connections, &ps.ConfirmRequest{
-		Id: id,
+		Id:       id,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -409,6 +444,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	group, ok := s.UploadTask[id]
 	s.m.RUnlock()
 	if !ok {
+		logrus.Warnf("Upload IDs %v not found %v", s.UploadTask, id)
 		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
 		return
 	}
@@ -418,9 +454,10 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = s.sendPut(connections, &ps.PutRequest{
-		Body:   body,
-		Id:     id,
-		Offset: offset,
+		Body:     body,
+		Id:       id,
+		Offset:   offset,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -465,6 +502,7 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request) {
 		VolumeId: getMetaResponse.VolumeId,
 		Offset:   getMetaResponse.Offset,
 		Start:    start,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)

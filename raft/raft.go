@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
-	"encoding/json"
 	pr "oss/proto/raft"
 	"sync"
 	"time"
 
+	"github.com/golang/protobuf/ptypes"
 	"github.com/sirupsen/logrus"
 )
 
@@ -46,6 +46,11 @@ type Raft struct {
 	electTimer *time.Timer
 	heartTimer *time.Timer
 	logger     *logrus.Logger
+}
+
+func (rf *Raft) SetConnections(me int, peers []pr.RaftClient) {
+	rf.me = me
+	rf.peers = peers
 }
 
 func (rf *Raft) toAbsolute(index int) int {
@@ -134,7 +139,7 @@ func (rf *Raft) startElection() {
 		}
 		go func(receiver int) {
 			response, err := rf.peers[receiver].Vote(context.Background(), request)
-			if err != nil {
+			if err == nil {
 				rf.mu.Lock()
 				if response.VoteGranted && rf.state == StateCandidate {
 					total += 1
@@ -310,13 +315,16 @@ func (rf *Raft) InstallSnapshot(ctx context.Context, request *pr.SnapshotRequest
 	args := pr.SnapshotRequest{
 		Data: rf.persister.ReadSnapshot(),
 	}
-	argsBytes, _ := json.Marshal(args)
+	any, err := ptypes.MarshalAny(&args)
+	if err != nil {
+		return nil, err
+	}
 	command := pr.Message{
 		CommandValid: true,
 		CommandIndex: int64(rf.snapshotIndex),
 		Command: &pr.Op{
 			Type: pr.Type_SNAPSHOT,
-			Args: argsBytes,
+			Args: any,
 		},
 	}
 	go func(msg pr.Message) {
@@ -409,8 +417,8 @@ func (rf *Raft) broadcastHeartbeat() {
 				LeaderCommit: int64(rf.commitIndex),
 			}
 			rf.mu.Unlock()
-			response, err := rf.peers[receiver].Append(context.Background(), request)
-			if err != nil {
+			response, err := rf.peers[receiver].AppendEntries(context.Background(), request)
+			if err == nil {
 				rf.mu.Lock()
 				if rf.state != StateLeader {
 					rf.mu.Unlock()
@@ -458,7 +466,7 @@ func (rf *Raft) broadcastHeartbeat() {
 	}
 }
 
-func (rf *Raft) startTimer() {
+func (rf *Raft) StartTimer() {
 	for {
 		select {
 		case <-rf.electTimer.C:
@@ -523,8 +531,8 @@ func (rf *Raft) sendSnapshot(receiver int) {
 		Data:              rf.persister.ReadSnapshot(),
 	}
 	rf.mu.Unlock()
-	response, err := rf.peers[receiver].Snapshot(context.Background(), request)
-	if err != nil {
+	response, err := rf.peers[receiver].InstallSnapshot(context.Background(), request)
+	if err == nil {
 		rf.mu.Lock()
 		if int(response.Term) > rf.currentTerm {
 			rf.currentTerm = int(response.Term)
@@ -565,7 +573,6 @@ func Make(peers []pr.RaftClient, me int, persister *Persister, applyCh chan pr.M
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.heartTimer = time.NewTimer(HeartbeatTimeout * time.Millisecond)
 	rf.electTimer = time.NewTimer(RandomRange(ElectTimeoutMin, ElectTimeoutMax) * time.Millisecond)
-	go rf.startTimer()
 	return rf
 }
 
