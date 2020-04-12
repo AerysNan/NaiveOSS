@@ -10,7 +10,6 @@ import (
 	"os"
 	"oss/global"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/natefinch/atomic"
@@ -26,7 +25,6 @@ type Test struct {
 	defaultBucket string
 	success       float32
 	failure       float32
-	w             sync.WaitGroup
 }
 
 type Response struct {
@@ -81,6 +79,7 @@ func (test *Test) Put(key, filepath string) error {
 		return err
 	}
 	request.Header.Add("bucket", test.defaultBucket)
+	request.Header.Add("name", filepath)
 	request.Header.Add("key", *putObjectFlagKey)
 	request.Header.Add("tag", tag)
 	request.Header.Add("token", test.token)
@@ -145,6 +144,7 @@ func (test *Test) Put(key, filepath string) error {
 	}
 	_ = os.Remove(name)
 	request.Header.Add("id", t.Id)
+	request.Header.Add("name", filepath)
 	request.Header.Add("bucket", test.defaultBucket)
 	request.Header.Add("key", *putObjectFlagKey)
 	request.Header.Add("tag", tag)
@@ -233,29 +233,26 @@ func (t *Test) parallelTest() error {
 	if err != nil {
 		return err
 	}
-	for i := 1; i <= 10; i++ {
-		t.w.Add(1)
-		go func(key int) {
-			defer t.w.Done()
-			err := t.Put(fmt.Sprintf("%d", key), fmt.Sprintf("%d.obj", key))
-			if err != nil {
-				fmt.Println(err)
-			}
-		}(i)
+	n := 200
+	putStart := time.Now().UnixNano()
+	for i := 1; i <= n; i++ {
+		err := t.Put(fmt.Sprintf("%d", i), fmt.Sprintf("../../%d.obj", i))
+		if err != nil {
+			fmt.Printf("Put error %v\n", err)
+		}
 	}
-	t.w.Wait()
-	for i := 1; i <= 10; i++ {
-		t.w.Add(1)
-		go func(key int) {
-			defer t.w.Done()
-			err := t.Get(fmt.Sprintf("%d", key))
-			if err != nil {
-				fmt.Println(err)
-			}
-		}(i)
+	putEnd := time.Now().UnixNano()
+	fmt.Printf("Put elapsed: %vs\n", float64(putEnd-putStart)/1e9)
+	getStart := time.Now().UnixNano()
+	for i := 1; i <= n; i++ {
+		err := t.Get(fmt.Sprintf("%d", i))
+		if err != nil {
+			fmt.Printf("Get error %v\n", err)
+		}
 	}
-	t.w.Wait()
-	for i := 1; i <= 10; i++ {
+	getEnd := time.Now().UnixNano()
+	fmt.Printf("Get elapsed: %vs\n", float64(getEnd-getStart)/1e9)
+	for i := 1; i <= n; i++ {
 		file1, err := os.Open(fmt.Sprintf("%d.oss", i))
 		if err != nil {
 			t.failure++
@@ -268,7 +265,7 @@ func (t *Test) parallelTest() error {
 			continue
 		}
 		_ = os.Remove(fmt.Sprintf("%d.oss", i))
-		file2, err := os.Open(fmt.Sprintf("%d.obj", i))
+		file2, err := os.Open(fmt.Sprintf("../../%d.obj", i))
 		if err != nil {
 			t.failure++
 			continue

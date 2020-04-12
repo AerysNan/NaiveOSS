@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -17,10 +16,7 @@ import (
 )
 
 var (
-	address  = kingpin.Flag("address", "address of storage server").Default("0.0.0.0:8080").String()
-	port     = kingpin.Flag("port", "listen port of storage server").Default("8080").String()
 	metadata = kingpin.Flag("metadata", "listen address of metadata server").Default("0.0.0.0:8081").String()
-	root     = kingpin.Flag("root", "metadata file path").Default("../data").String()
 	config   = kingpin.Flag("config", "config file full name").Default("../config/storage.json").String()
 	debug    = kingpin.Flag("debug", "use debug level of logging").Default("false").Bool()
 )
@@ -54,16 +50,15 @@ func main() {
 		logrus.WithError(err).Fatal("Unmarshal JSON failed")
 	}
 	file.Close()
-	storageServer := storage.NewStorageServer(*address, *root, metadataClient, config)
-	listenAddress := fmt.Sprintf("%s:%s", "0.0.0.0", *port)
-	listen, err := net.Listen("tcp", listenAddress)
+	storageServer := storage.NewStorageServer(metadataClient, config)
+	listen, err := net.Listen("tcp", config.Address)
 	if err != nil {
 		logrus.WithError(err).Fatal("Listen port failed")
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(global.MaxTransportSize), grpc.MaxSendMsgSize(global.MaxTransportSize))
 	ps.RegisterStorageForMetadataServer(server, storageServer)
 	ps.RegisterStorageForProxyServer(server, storageServer)
-	logrus.WithField("address", listenAddress).Info("Server started")
+	logrus.WithField("address", config.Address).Infof("Server started with data directory %v", config.Root)
 	if err = server.Serve(listen); err != nil {
 		logrus.WithError(err).Fatal("Server failed")
 	}

@@ -2,10 +2,12 @@ syntax = "proto3";
 
 package pr;
 
+import "google/protobuf/any.proto";
+
 service Raft {
   rpc Vote(VoteRequest) returns (VoteResponse) {}
-  rpc Append(AppendRequest) returns (AppendResponse) {}
-  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse) {}
+  rpc AppendEntries(AppendRequest) returns (AppendResponse) {}
+  rpc InstallSnapshot(SnapshotRequest) returns (SnapshotResponse) {}
 }
 
 message VoteRequest {
@@ -50,12 +52,20 @@ message Op {
   Type type = 1;
   int64 client_id = 2;
   int64 command_id = 3;
-  bytes args = 4;
+  google.protobuf.Any args = 4;
 }
 
 enum Type {
   SNAPSHOT = 0;
-  PUT = 1;
+  STATE = 1;
+  MIGRATE = 2;
+  ROTATE = 3;
+  DELETE = 4;
+  GET = 5;
+  CREATE = 6;
+  PUT = 7;
+  CONFIRM = 8;
+  CHECK = 9;
 }
 
 message Message {

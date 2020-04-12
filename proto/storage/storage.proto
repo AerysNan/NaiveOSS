@@ -8,13 +8,19 @@ service StorageForMetadata {
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse) {}
 }
 
-message StateRequest { int64 volume_id = 1; }
+message StateRequest {
+  int64 volume_id = 1;
+  int64 client_id = 2;
+  int64 command_id = 3;
+}
 
 message StateResponse { int64 size = 1; }
 
 message MigrateRequest {
   int64 volume_id = 1;
   int64 offset = 2;
+  int64 client_id = 3;
+  int64 command_id = 4;
 }
 
 message MigrateResponse {
@@ -22,11 +28,18 @@ message MigrateResponse {
   int64 offset = 2;
 }
 
-message RotateRequest {}
+message RotateRequest {
+  int64 client_id = 1;
+  int64 command_id = 2;
+}
 
 message RotateResponse {}
 
-message DeleteVolumeRequest { int64 volume_id = 1; }
+message DeleteVolumeRequest {
+  int64 volume_id = 1;
+  int64 client_id = 2;
+  int64 command_id = 3;
+}
 
 message DeleteVolumeResponse {}
 
@@ -42,26 +55,36 @@ message GetRequest {
   int64 volume_id = 1;
   int64 offset = 2;
   int64 start = 3;
+  int64 client_id = 4;
+  int64 command_id = 5;
 }
 
 message GetResponse { bytes body = 1; }
 
-message CreateRequest { 
-  string id = 1; 
+message CreateRequest {
+  string id = 1;
   string tag = 2;
+  int64 client_id = 3;
+  int64 command_id = 4;
 }
 
 message CreateResponse {}
 
-message PutRequest { 
-  bytes body = 1; 
+message PutRequest {
+  bytes body = 1;
   string id = 2;
   int64 offset = 3;
+  int64 client_id = 4;
+  int64 command_id = 5;
 }
 
 message PutResponse {}
 
-message ConfirmRequest { string id = 1; }
+message ConfirmRequest {
+  string id = 1;
+  int64 client_id = 2;
+  int64 command_id = 3;
+}
 
 message ConfirmResponse {
   int64 volume_id = 1;
@@ -69,6 +92,9 @@ message ConfirmResponse {
   int64 size = 3;
 }
 
-message CheckBlobRequest {}
+message CheckBlobRequest {
+  int64 client_id = 1;
+  int64 command_id = 2;
+}
 
-message CheckBlobResponse { repeated string id = 1; } 
+message CheckBlobResponse { repeated string id = 1; }

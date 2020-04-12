@@ -18,6 +18,7 @@ require (
 	github.com/stretchr/testify v1.4.0
 	go.uber.org/atomic v1.5.1 // indirect
 	golang.org/x/tools/gopls v0.1.7 // indirect
+	google.golang.org/genproto v0.0.0-20180817151627-c66870c02cf8
 	google.golang.org/grpc v1.24.0
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 )

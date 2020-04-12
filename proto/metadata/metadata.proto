@@ -5,7 +5,10 @@ service MetadataForStorage {
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
 }
 
-message HeartbeatRequest { string address = 1; }
+message HeartbeatRequest {
+  Group group = 1;
+  int64 leader_id = 3;
+}
 
 message HeartbeatResponse {}
 
@@ -61,7 +64,7 @@ message CheckMetaRequest {
 
 message CheckMetaResponse {
   bool existed = 1;
-  string address = 2;
+  Group group = 2;
 }
 
 message PutMetaRequest {
@@ -73,6 +76,7 @@ message PutMetaRequest {
   int64 volume_id = 6;
   int64 offset = 7;
   int64 size = 8;
+  string group_id = 9;
 }
 
 message PutMetaResponse {}
@@ -83,7 +87,7 @@ message GetMetaRequest {
 }
 
 message GetMetaResponse {
-  string address = 1;
+  Group group = 1;
   string name = 2;
   int64 volume_id = 3;
   int64 offset = 4;
@@ -97,3 +101,8 @@ message DeleteMetaRequest {
 }
 
 message DeleteMetaResponse {}
+
+message Group {
+  string group_id = 1;
+  repeated string addresses = 2;
+}

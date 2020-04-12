@@ -1,5 +1,10 @@
 package metadata
 
+import (
+	"crypto/rand"
+	"math/big"
+)
+
 func mergeEntryMatrix(entryMatrix [][]*Entry) []*Entry {
 	result := make([]*Entry, 0)
 	pos := make([]int, len(entryMatrix))
@@ -66,4 +71,11 @@ func entrySliceRange(list []*Entry, from string, to string) []*Entry {
 		return nil
 	}
 	return list[L : R+1]
+}
+
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
 }

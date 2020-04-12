@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io/ioutil"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,44 +23,184 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const maxStorageConnection = 10
-const checkExpiredBlobsTimeout = 360000000000
+const (
+	maxStorageConnection     = 10
+	checkExpiredBlobsTimeout = 30 * time.Second
+	executeTimeout           = 2 * time.Second
+)
 
 type Server struct {
 	http.Handler
 	authClient  pa.AuthForProxyClient
 	metaClient  pm.MetadataForProxyClient
-	dataClients map[string]*grpc.ClientConn
+	dataClients map[string][]*grpc.ClientConn
 	m           *sync.RWMutex
-	UploadTask  map[string]string
+	UploadTask  map[string]*pm.Group // taskID -> group
 	Address     string
+
+	ClientId  int64
+	CommandId int64
 }
 
 func NewProxyServer(address string, authClient pa.AuthForProxyClient, metadataClient pm.MetadataForProxyClient) *Server {
 	s := &Server{
 		Address:     address,
-		UploadTask:  make(map[string]string),
+		UploadTask:  make(map[string]*pm.Group),
 		m:           new(sync.RWMutex),
 		authClient:  authClient,
 		metaClient:  metadataClient,
-		dataClients: make(map[string]*grpc.ClientConn),
+		dataClients: make(map[string][]*grpc.ClientConn),
+		ClientId:    nrand(),
+		CommandId:   0,
 	}
 	go s.checkExpiredBlobs()
 	return s
+}
+
+func (s *Server) sendGet(connections []*grpc.ClientConn, request *ps.GetRequest) (*ps.GetResponse, error) {
+	index := 0
+	deadline := time.Now().Add(executeTimeout)
+	s.m.Lock()
+	s.CommandId++
+	request.CommandId = s.CommandId
+	s.m.Unlock()
+	for {
+		client := ps.NewStorageForProxyClient(connections[index])
+		response, err := client.Get(context.Background(), request)
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
+			index = (index + 1) % len(connections)
+			if time.Now().After(deadline) {
+				return nil, global.ErrorStorageConnection
+			}
+		} else if err != nil {
+			logrus.WithError(err).Error("Send get failed")
+			return nil, err
+		}
+	}
+}
+
+func (s *Server) sendCreate(connections []*grpc.ClientConn, request *ps.CreateRequest) (*ps.CreateResponse, error) {
+	index := 0
+	deadline := time.Now().Add(executeTimeout)
+	s.m.Lock()
+	s.CommandId++
+	request.CommandId = s.CommandId
+	s.m.Unlock()
+	for {
+		client := ps.NewStorageForProxyClient(connections[index])
+		response, err := client.Create(context.Background(), request)
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
+			index = (index + 1) % len(connections)
+			if time.Now().After(deadline) {
+				return nil, global.ErrorStorageConnection
+			}
+		} else if err != nil {
+			logrus.WithError(err).Error("Send create failed")
+			return nil, err
+		}
+	}
+}
+
+func (s *Server) sendPut(connections []*grpc.ClientConn, request *ps.PutRequest) (*ps.PutResponse, error) {
+	index := 0
+	deadline := time.Now().Add(executeTimeout)
+	s.m.Lock()
+	s.CommandId++
+	request.CommandId = s.CommandId
+	s.m.Unlock()
+	for {
+		client := ps.NewStorageForProxyClient(connections[index])
+		response, err := client.Put(context.Background(), request)
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
+			index = (index + 1) % len(connections)
+			if time.Now().After(deadline) {
+				return nil, global.ErrorStorageConnection
+			}
+		} else if err != nil {
+			logrus.WithError(err).Error("Send put failed")
+			return nil, err
+		}
+	}
+}
+
+func (s *Server) sendConfirm(connections []*grpc.ClientConn, request *ps.ConfirmRequest) (*ps.ConfirmResponse, error) {
+	index := 0
+	deadline := time.Now().Add(executeTimeout)
+	s.m.Lock()
+	s.CommandId++
+	request.CommandId = s.CommandId
+	s.m.Unlock()
+	for {
+		client := ps.NewStorageForProxyClient(connections[index])
+		response, err := client.Confirm(context.Background(), request)
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
+			index = (index + 1) % len(connections)
+			if time.Now().After(deadline) {
+				return nil, global.ErrorStorageConnection
+			}
+		} else if err != nil {
+			logrus.WithError(err).Error("Send confirm failed")
+			return nil, err
+		}
+	}
+}
+
+func (s *Server) sendCheckBlob(connections []*grpc.ClientConn, request *ps.CheckBlobRequest) (*ps.CheckBlobResponse, error) {
+	index := 0
+	deadline := time.Now().Add(executeTimeout)
+	s.m.Lock()
+	s.CommandId++
+	request.CommandId = s.CommandId
+	s.m.Unlock()
+	for {
+		client := ps.NewStorageForProxyClient(connections[index])
+		response, err := client.CheckBlob(context.Background(), request)
+		if err == nil {
+			return response, nil
+		}
+		st, _ := status.FromError(err)
+		if st.Message() == global.ErrorWrongLeader {
+			index = (index + 1) % len(connections)
+			if time.Now().After(deadline) {
+				return nil, global.ErrorStorageConnection
+			}
+		} else if err != nil {
+			logrus.WithError(err).Error("Send check blob failed")
+			return nil, err
+		}
+	}
 }
 
 func (s *Server) checkExpiredBlobs() {
 	ticker := time.NewTicker(checkExpiredBlobsTimeout)
 	for {
 		s.m.RLock()
-		conns := s.dataClients
+		connMap := s.dataClients
 		s.m.RUnlock()
 		blobs := make([]string, 0)
-		for address, conn := range conns {
-			client := ps.NewStorageForProxyClient(conn)
-			response, err := client.CheckBlob(context.Background(), &ps.CheckBlobRequest{})
+		for groupId, connections := range connMap {
+			response, err := s.sendCheckBlob(connections, &ps.CheckBlobRequest{
+				ClientId: s.ClientId,
+			})
 			if err != nil {
-				logrus.WithField("address", address).Warn("connection fail")
+				logrus.WithField("group", groupId).Warn("connection fail")
+				continue
 			}
 			blobs = append(blobs, response.Id...)
 		}
@@ -191,20 +333,24 @@ func (s *Server) createUploadID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	address := response.Address
+	group := response.Group
 	s.m.Lock()
 	id = strconv.FormatInt(time.Now().UnixNano(), 10)
-	s.UploadTask[id] = address
+	s.UploadTask[id] = &pm.Group{
+		GroupId:   group.GroupId,
+		Addresses: group.Addresses,
+	}
+	logrus.Infof("Create upload id %v", id)
 	s.m.Unlock()
-	connection, err := s.validateConnection(address)
+	connections, err := s.validateConnection(group)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	storageClient := ps.NewStorageForProxyClient(connection)
-	_, err = storageClient.Create(ctx, &ps.CreateRequest{
-		Tag: tag,
-		Id:  id,
+	_, err = s.sendCreate(connections, &ps.CreateRequest{
+		Tag:      tag,
+		Id:       id,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -230,19 +376,21 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	address, ok := s.UploadTask[id]
+	s.m.RLock()
+	group, ok := s.UploadTask[id]
+	s.m.RUnlock()
 	if !ok {
 		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
 		return
 	}
-	connection, err := s.validateConnection(address)
+	connections, err := s.validateConnection(group)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	storageClient := ps.NewStorageForProxyClient(connection)
-	confirmResponse, err := storageClient.Confirm(ctx, &ps.ConfirmRequest{
-		Id: id,
+	confirmResponse, err := s.sendConfirm(connections, &ps.ConfirmRequest{
+		Id:       id,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -253,7 +401,7 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 		Key:      key,
 		Tag:      tag,
 		Name:     name,
-		Address:  address,
+		GroupId:  group.GroupId,
 		VolumeId: confirmResponse.VolumeId,
 		Offset:   confirmResponse.Offset,
 		Size:     confirmResponse.Size,
@@ -287,26 +435,29 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status.Error(codes.InvalidArgument, "invalid upload file offset"))
 		return
 	}
-	address, ok := s.UploadTask[id]
-	if !ok {
-		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
-		return
-	}
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	connection, err := s.validateConnection(address)
+	s.m.RLock()
+	group, ok := s.UploadTask[id]
+	s.m.RUnlock()
+	if !ok {
+		logrus.Warnf("Upload IDs %v not found %v", s.UploadTask, id)
+		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
+		return
+	}
+	connections, err := s.validateConnection(group)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	storageClient := ps.NewStorageForProxyClient(connection)
-	_, err = storageClient.Put(ctx, &ps.PutRequest{
-		Body:   body,
-		Id:     id,
-		Offset: offset,
+	_, err = s.sendPut(connections, &ps.PutRequest{
+		Body:     body,
+		Id:       id,
+		Offset:   offset,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -341,17 +492,17 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	address := getMetaResponse.Address
-	connection, err := s.validateConnection(address)
+	group := getMetaResponse.Group
+	connections, err := s.validateConnection(group)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	storageClient := ps.NewStorageForProxyClient(connection)
-	getResponse, err := storageClient.Get(ctx, &ps.GetRequest{
+	getResponse, err := s.sendGet(connections, &ps.GetRequest{
 		VolumeId: getMetaResponse.VolumeId,
 		Offset:   getMetaResponse.Offset,
 		Start:    start,
+		ClientId: s.ClientId,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -541,27 +692,39 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, nil)
 }
 
-func (s *Server) validateConnection(address string) (*grpc.ClientConn, error) {
+func (s *Server) validateConnection(group *pm.Group) ([]*grpc.ClientConn, error) {
 	s.m.RLock()
-	connection, ok := s.dataClients[address]
+	connections, ok := s.dataClients[group.GroupId]
 	s.m.RUnlock()
-	var err error
 	if !ok {
 		diaOpt := grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(global.MaxTransportSize), grpc.MaxCallRecvMsgSize(global.MaxTransportSize))
-		connection, err = grpc.Dial(address, grpc.WithInsecure(), diaOpt)
-		if err != nil {
-			return nil, err
+		connections = make([]*grpc.ClientConn, 0)
+		for _, address := range group.Addresses {
+			connection, err := grpc.Dial(address, grpc.WithInsecure(), diaOpt)
+			if err != nil {
+				return nil, err
+			}
+			connections = append(connections, connection)
 		}
 		s.m.Lock()
 		if len(s.dataClients) >= maxStorageConnection {
 			for k := range s.dataClients {
-				s.dataClients[k].Close()
+				for _, conn := range s.dataClients[k] {
+					conn.Close()
+				}
 				delete(s.dataClients, k)
 				break
 			}
 		}
-		s.dataClients[address] = connection
+		s.dataClients[group.GroupId] = connections
 		s.m.Unlock()
 	}
-	return connection, nil
+	return connections, nil
+}
+
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
 }
