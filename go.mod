@@ -15,7 +15,10 @@ require (
 	github.com/mattn/go-sqlite3 v1.11.0
 	github.com/natefinch/atomic v0.0.0-20150920032501-a62ce929ffcc
 	github.com/sirupsen/logrus v1.4.2
+	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/stretchr/testify v1.4.0
+	github.com/willf/bitset v1.1.10 // indirect
+	github.com/willf/bloom v2.0.3+incompatible
 	go.uber.org/atomic v1.5.1 // indirect
 	golang.org/x/tools/gopls v0.1.7 // indirect
 	google.golang.org/grpc v1.24.0

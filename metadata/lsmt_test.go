@@ -3,6 +3,8 @@ package metadata
 import (
 	"sort"
 	"testing"
+
+	"github.com/willf/bloom"
 )
 
 type BenchmarkEntry struct {
@@ -12,6 +14,11 @@ type BenchmarkEntry struct {
 }
 
 type BenchmarkLayer []*BenchmarkEntry
+
+type BenchmarkLayerWithBloom struct {
+	layer  BenchmarkLayer
+	filter *bloom.BloomFilter
+}
 
 func (entries BenchmarkLayer) Less(i, j int) bool {
 	return entries[i].Key < entries[j].Key
@@ -26,39 +33,50 @@ func (entries BenchmarkLayer) Len() int {
 }
 
 type BenchmarkLevel struct {
-	Layers    []BenchmarkLayer
+	Layers    []BenchmarkLayerWithBloom
 	Threshold int
 }
 
 func newBenchmarkLevel(threshold int) *BenchmarkLevel {
 	return &BenchmarkLevel{
-		Layers:    []BenchmarkLayer{make([]*BenchmarkEntry, 0)},
+		Layers: []BenchmarkLayerWithBloom{{
+			layer:  make([]*BenchmarkEntry, 0),
+			filter: bloom.New(10000, 3),
+		}},
 		Threshold: threshold,
 	}
 }
 
 func (level *BenchmarkLevel) put(key string, value string) {
 	layer := level.Layers[len(level.Layers)-1]
-	if len(layer) >= level.Threshold {
-		level.Layers = append(level.Layers, make([]*BenchmarkEntry, 0))
+	if len(layer.layer) >= level.Threshold {
+		level.Layers = append(level.Layers, BenchmarkLayerWithBloom{
+			layer:  make([]*BenchmarkEntry, 0),
+			filter: bloom.New(10000, 3),
+		})
 	}
-	level.Layers[len(level.Layers)-1] = append(level.Layers[len(level.Layers)-1], &BenchmarkEntry{
+	level.Layers[len(level.Layers)-1].layer = append(level.Layers[len(level.Layers)-1].layer, &BenchmarkEntry{
 		Key:    key,
 		Value:  value,
 		Delete: false,
 	})
+	level.Layers[len(level.Layers)-1].filter.AddString(key)
 }
 
 func (level *BenchmarkLevel) get(key string) (string, bool) {
 	layers := level.Layers
 	for i := len(layers) - 1; i >= 0; i-- {
 		layer := layers[i]
-		l, h := 0, len(layer)-1
+		if !layer.filter.TestString(key) {
+			//fmt.Printf("layer %v early exit\n", i)
+			continue
+		}
+		l, h := 0, len(layer.layer)-1
 		for l <= h {
 			m := l + (h-l)/2
-			if layer[m].Key == key {
-				return layer[m].Value, true
-			} else if layer[m].Key > key {
+			if layer.layer[m].Key == key {
+				return layer.layer[m].Value, true
+			} else if layer.layer[m].Key > key {
 				h = m - 1
 			} else {
 				l = m + 1
@@ -246,30 +264,30 @@ func (tree *BenchmarkRBTree) recolor(node *BenchmarkRBTreeNode) {
 }
 
 func BenchmarkCompaction(b *testing.B) {
-	n := 1000
+	n := 2000
 	size := 10
 	b.ResetTimer()
 	for j := 0; j < b.N; j++ {
 		b.StopTimer()
 		layers := makeBenchmarkLayers(n, size)
 		b.StartTimer()
-		i := len(layers) - 100
-		for ; i > 0; i -= 99 {
+		i := len(layers) - 10
+		for ; i > 0; i -= 9 {
 			b.StopTimer()
-			buffer := layers[i : i+100]
+			buffer := layers[i : i+10]
 			b.StartTimer()
 			layers[i] = mergeBenchmarkLayers(buffer)
 		}
 		b.StopTimer()
-		buffer := layers[:i+100]
+		buffer := layers[:i+10]
 		b.StartTimer()
 		layers[0] = mergeBenchmarkLayers(buffer)
 	}
 }
 
 func BenchmarkLeveledCompaction(b *testing.B) {
-	n := 10000
-	size := 10
+	n := 1000
+	size := 100
 	b.ResetTimer()
 	for j := 0; j < b.N; j++ {
 		b.StopTimer()
@@ -288,7 +306,7 @@ func BenchmarkLeveledCompaction(b *testing.B) {
 }
 
 func BenchmarkRBTreePut(b *testing.B) {
-	n := 1000000
+	n := 10
 	b.ResetTimer()
 	for j := 0; j < b.N; j++ {
 		tree := newBenchmarkRBTree()
@@ -303,7 +321,7 @@ func BenchmarkRBTreePut(b *testing.B) {
 }
 
 func BenchmarkLSMTPut(b *testing.B) {
-	n := 1000000
+	n := 10
 	b.ResetTimer()
 	for j := 0; j < b.N; j++ {
 		level := newBenchmarkLevel(100)
@@ -318,7 +336,7 @@ func BenchmarkLSMTPut(b *testing.B) {
 }
 
 func BenchmarkRBTreeRead(b *testing.B) {
-	n := 1000000
+	n := 10000
 	keys := make([]string, n)
 	tree := newBenchmarkRBTree()
 	for i := 0; i < n; i++ {
@@ -343,11 +361,13 @@ func BenchmarkLSMTRead(b *testing.B) {
 		value := randstring(20)
 		level.put(keys[i], value)
 	}
-	sort.Sort(level.Layers[len(level.Layers)-1])
+	sort.Sort(level.Layers[len(level.Layers)-1].layer)
 	b.ResetTimer()
+	//b.Log(level.Layers[0].filter.EstimateFalsePositiveRate(100))
 	for j := 0; j < b.N; j++ {
 		for i := 0; i < n; i++ {
-			level.get(keys[i])
+			index := n - 1 - 1000*i/n - 6
+			level.get(keys[index])
 		}
 	}
 }
