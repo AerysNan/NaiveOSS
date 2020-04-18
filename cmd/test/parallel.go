@@ -48,8 +48,12 @@ func newTest() *Test {
 	}
 }
 
+var getElapsed int64
+var putElapsed int64
+var client *http.Client
+
 func (test *Test) Put(key, filepath string) error {
-	client := &http.Client{}
+	fmt.Printf("Put: %v\n", key)
 	putObjectFlagKey := &key
 	putObjectFlagObject := &filepath
 	file, err := os.Open(*putObjectFlagObject)
@@ -57,6 +61,7 @@ func (test *Test) Put(key, filepath string) error {
 		return err
 	}
 	content, err := ioutil.ReadAll(file)
+	file.Close()
 	if err != nil {
 		return err
 	}
@@ -81,10 +86,12 @@ func (test *Test) Put(key, filepath string) error {
 		return err
 	}
 	request.Header.Add("bucket", test.defaultBucket)
+	request.Header.Add("name", filepath)
 	request.Header.Add("key", *putObjectFlagKey)
 	request.Header.Add("tag", tag)
 	request.Header.Add("token", test.token)
 	request.Header.Add("id", t.Id)
+	begin := time.Now().UnixNano()
 	response, err := client.Do(request)
 	if err != nil {
 		return err
@@ -125,6 +132,8 @@ func (test *Test) Put(key, filepath string) error {
 			return err
 		}
 		if response.StatusCode != http.StatusOK {
+			bytes, _ := ioutil.ReadAll(response.Body)
+			fmt.Printf("Error: %v\n", string(bytes))
 			_ = os.Remove(name)
 			return os.ErrInvalid
 		}
@@ -145,6 +154,7 @@ func (test *Test) Put(key, filepath string) error {
 	}
 	_ = os.Remove(name)
 	request.Header.Add("id", t.Id)
+	request.Header.Add("name", filepath)
 	request.Header.Add("bucket", test.defaultBucket)
 	request.Header.Add("key", *putObjectFlagKey)
 	request.Header.Add("tag", tag)
@@ -158,11 +168,13 @@ func (test *Test) Put(key, filepath string) error {
 	if err != nil {
 		return err
 	}
+	end := time.Now().UnixNano()
+	putElapsed += end - begin
 	return nil
 }
 
 func (test *Test) Get(key string) error {
-	client := &http.Client{}
+	fmt.Printf("Get: %v\n", key)
 	getObjectFlagKey := &key
 	file, err := os.Stat(*getObjectFlagKey)
 	var start int64
@@ -180,6 +192,7 @@ func (test *Test) Get(key string) error {
 	request.Header.Add("key", *getObjectFlagKey)
 	request.Header.Add("start", strconv.FormatInt(start, 10))
 	request.Header.Add("token", test.token)
+	begin := time.Now().UnixNano()
 	response, err := client.Do(request)
 	if err != nil {
 		return err
@@ -193,6 +206,8 @@ func (test *Test) Get(key string) error {
 		code: response.StatusCode,
 		body: string(bytes),
 	}
+	end := time.Now().UnixNano()
+	getElapsed += end - begin
 	path := fmt.Sprintf("%s.oss", *getObjectFlagKey)
 	if response.StatusCode == http.StatusOK {
 		err = saveFile(bytes, path)
@@ -222,7 +237,7 @@ func saveFile(content []byte, filename string) error {
 }
 
 func (t *Test) parallelTest() error {
-	client := &http.Client{}
+	n := 1000
 	request, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *endpoint, "/api/bucket"), nil)
 	if err != nil {
 		return err
@@ -233,47 +248,39 @@ func (t *Test) parallelTest() error {
 	if err != nil {
 		return err
 	}
-	for i := 1; i <= 10; i++ {
-		t.w.Add(1)
-		go func(key int) {
-			defer t.w.Done()
-			err := t.Put(fmt.Sprintf("%d", key), fmt.Sprintf("%d.obj", key))
-			if err != nil {
-				fmt.Println(err)
-			}
-		}(i)
+	for i := 1; i <= n; i++ {
+		err := t.Put(fmt.Sprintf("%d", i), fmt.Sprintf("../../%d.obj", i))
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
-	t.w.Wait()
-	for i := 1; i <= 10; i++ {
-		t.w.Add(1)
-		go func(key int) {
-			defer t.w.Done()
-			err := t.Get(fmt.Sprintf("%d", key))
-			if err != nil {
-				fmt.Println(err)
-			}
-		}(i)
+	for i := 1; i <= n; i++ {
+		err := t.Get(fmt.Sprintf("%d", i))
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
-	t.w.Wait()
-	for i := 1; i <= 10; i++ {
+	for i := 1; i <= n; i++ {
 		file1, err := os.Open(fmt.Sprintf("%d.oss", i))
 		if err != nil {
 			t.failure++
 			continue
 		}
 		content1, err := ioutil.ReadAll(file1)
+		file1.Close()
 		if err != nil {
 			t.failure++
 			_ = os.Remove(fmt.Sprintf("%d.oss", i))
 			continue
 		}
 		_ = os.Remove(fmt.Sprintf("%d.oss", i))
-		file2, err := os.Open(fmt.Sprintf("%d.obj", i))
+		file2, err := os.Open(fmt.Sprintf("../../%d.obj", i))
 		if err != nil {
 			t.failure++
 			continue
 		}
 		content2, err := ioutil.ReadAll(file2)
+		file2.Close()
 		if err != nil {
 			t.failure++
 			continue
@@ -289,7 +296,11 @@ func (t *Test) parallelTest() error {
 
 func main() {
 	kingpin.Parse()
+	client = &http.Client{}
+	putElapsed = 0
+	getElapsed = 0
 	test := newTest()
+	fmt.Println("Start testing...")
 	startTime := time.Now().UnixNano()
 	err := test.parallelTest()
 	if err != nil {
@@ -301,4 +312,6 @@ func main() {
 	fmt.Println("Failure:", test.failure)
 	fmt.Println("SuccessRate:", fmt.Sprintf("%.2f", ((test.success/(test.success+test.failure))*100.0)), "%")
 	fmt.Println("UseTime:", fmt.Sprintf("%.4f", float64(endTime-startTime)/1e9), "s")
+	fmt.Println("PutTime:", fmt.Sprintf("%.4f", float64(putElapsed)/1e9), "s")
+	fmt.Println("GetTime:", fmt.Sprintf("%.4f", float64(getElapsed)/1e9), "s")
 }

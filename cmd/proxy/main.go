@@ -8,6 +8,8 @@ import (
 	pa "oss/proto/auth"
 	pm "oss/proto/metadata"
 
+	_ "net/http/pprof"
+
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"gopkg.in/alecthomas/kingpin.v2"

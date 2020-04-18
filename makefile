@@ -1,5 +1,5 @@
-n = 26
-m = 1024
+n = 1000
+m = 1000000
 
 all: clean protobuf binary object
 
@@ -24,7 +24,7 @@ clean:
 	cd data && rm -rf *
 
 object:
-	python gen.py $(n) $(m)
+	go run gen.go $(n) $(m)
 
 docker:
 	cd cmd/metadata && go build && sudo docker build . -t metadata && rm metadata

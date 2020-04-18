@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	_ "net/http/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -232,6 +233,7 @@ func (s *Server) confirmUploadID(w http.ResponseWriter, r *http.Request) {
 	}
 	address, ok := s.UploadTask[id]
 	if !ok {
+		logrus.Warnf("invalid id %v\n", id)
 		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
 		return
 	}
@@ -289,6 +291,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request) {
 	}
 	address, ok := s.UploadTask[id]
 	if !ok {
+		logrus.Warnf("invalid id %v\n", id)
 		writeError(w, status.Error(codes.InvalidArgument, "invalid upload id value"))
 		return
 	}

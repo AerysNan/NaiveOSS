@@ -296,7 +296,7 @@ func (s *Server) dumpLoop() {
 func (s *Server) gcLoop() {
 	ticker := time.NewTicker(s.config.GCTimeout)
 	for {
-		s.m.RLock()
+		s.m.Lock()
 		for volume, ref := range s.ref {
 			if ref > 0 {
 				continue
@@ -338,7 +338,7 @@ func (s *Server) gcLoop() {
 				logrus.Debug("GC useless volume succeeded")
 			}
 		}
-		s.m.RUnlock()
+		s.m.Unlock()
 		<-ticker.C
 	}
 }
