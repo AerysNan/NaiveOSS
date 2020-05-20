@@ -1,4 +1,4 @@
-n = 1000
+n = 200
 m = 1000000
 
 all: clean protobuf binary object

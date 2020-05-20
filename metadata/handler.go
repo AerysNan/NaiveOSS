@@ -67,7 +67,7 @@ func NewMetadataServer(address string, root string, config *Config) *Server {
 	go s.gcLoop()
 	go s.dumpLoop()
 	go s.compactLoop()
-	go s.heartbeatLoop()
+	//	go s.heartbeatLoop()
 	return s
 }
 

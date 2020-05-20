@@ -19,6 +19,7 @@ import (
 
 var (
 	endpoint = kingpin.Flag("a", "address of object storage service").Default("http://127.0.0.1:8082").String()
+	n        = 200
 )
 
 type Test struct {
@@ -237,7 +238,6 @@ func saveFile(content []byte, filename string) error {
 }
 
 func (t *Test) parallelTest() error {
-	n := 1000
 	request, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *endpoint, "/api/bucket"), nil)
 	if err != nil {
 		return err
@@ -313,5 +313,7 @@ func main() {
 	fmt.Println("SuccessRate:", fmt.Sprintf("%.2f", ((test.success/(test.success+test.failure))*100.0)), "%")
 	fmt.Println("UseTime:", fmt.Sprintf("%.4f", float64(endTime-startTime)/1e9), "s")
 	fmt.Println("PutTime:", fmt.Sprintf("%.4f", float64(putElapsed)/1e9), "s")
+	fmt.Println("PutTimePerFile:", fmt.Sprintf("%.4f", float64(putElapsed)/1e6/float64(n)), "ms")
 	fmt.Println("GetTime:", fmt.Sprintf("%.4f", float64(getElapsed)/1e9), "s")
+	fmt.Println("GetTimePerFile:", fmt.Sprintf("%.4f", float64(getElapsed)/1e6/float64(n)), "ms")
 }
