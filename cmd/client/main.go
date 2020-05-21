@@ -344,17 +344,17 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 		r.body = fmt.Sprintf("The file has been saved to file %s.", path)
 		return r, nil
 	}
+	bytes, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, errorReadResponse
+	}
 	if hasToken && response.StatusCode == http.StatusOK {
-		err = saveToken(r.body)
+		err = saveToken(string(bytes))
 		if err != nil {
 			return nil, err
 		}
 		r.body = "OK"
 		return r, nil
-	}
-	bytes, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return nil, errorReadResponse
 	}
 	r.body = string(bytes)
 	return r, nil
@@ -363,11 +363,11 @@ func handle(client *http.Client, cmd string, token string) (*Response, error) {
 func getToken() string {
 	file, err := os.Open("token")
 	if err != nil {
-		return ""
+		return "undefined"
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		return ""
+		return "undefined"
 	}
 	return string(content)
 }
