@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"os"
 	"oss/global"
+	"path"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/natefinch/atomic"
@@ -27,7 +27,6 @@ type Test struct {
 	defaultBucket string
 	success       float32
 	failure       float32
-	w             sync.WaitGroup
 }
 
 type Response struct {
@@ -57,6 +56,7 @@ func (test *Test) Put(key, filepath string) error {
 	fmt.Printf("Put: %v\n", key)
 	putObjectFlagKey := &key
 	putObjectFlagObject := &filepath
+	_, fileName := path.Split(*putObjectFlagObject)
 	file, err := os.Open(*putObjectFlagObject)
 	if err != nil {
 		return err
@@ -87,7 +87,7 @@ func (test *Test) Put(key, filepath string) error {
 		return err
 	}
 	request.Header.Add("bucket", test.defaultBucket)
-	request.Header.Add("name", filepath)
+	request.Header.Add("name", fileName)
 	request.Header.Add("key", *putObjectFlagKey)
 	request.Header.Add("tag", tag)
 	request.Header.Add("token", test.token)
